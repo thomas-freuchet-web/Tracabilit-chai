@@ -349,6 +349,7 @@ function Modal({ title, subtitle, onClose, children, large }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className={`modal ${large ? 'modal-lg' : ''}`} onClick={(e) => e.stopPropagation()}>
+        <button className="modal-close" onClick={onClose} aria-label="Fermer">✕</button>
         <h2 className="modal-title">{title}</h2>
         {subtitle && <p className="modal-sub">{subtitle}</p>}
         {children}
@@ -737,7 +738,7 @@ function EcranReleve({ lots, contenants, lieux, parcelles, cepages, onEnregistre
             Enregistrer {aSaisir.length > 0 ? `(${aSaisir.length})` : ''}
           </button>
         </div>
-        <p>Passe de cuve en cuve et saisis températures et densités. Rien n'est enregistré tant que tu ne valides pas.</p>
+        <p className="releve-intro">Passe de cuve en cuve et saisis températures et densités. Rien n'est enregistré tant que tu ne valides pas.</p>
       </header>
 
       {enregistre > 0 && (
@@ -786,36 +787,36 @@ function EcranReleve({ lots, contenants, lieux, parcelles, cepages, onEnregistre
                   ? roundFin(Number(s.densite) - d.densite) : null;
                 return (
                   <tr key={k} className={fait ? 'ligne-faite' : ''}>
-                    <td>
+                    <td data-label="Contenant">
                       <strong>{ct ? ct.nom : '?'}</strong>
                       <div className="muted small">{ct && lieux[ct.lieuId] ? lieux[ct.lieuId].nom : ''} · {l.volume} hL</div>
                     </td>
-                    <td>
+                    <td data-label="Lot">
                       <button className="lien" onClick={() => onOuvrirLot(l.lot.id)}>
                         <ColorDot couleur={couleurLot(l.lot, parcelles, cepages)} />{l.lot.code}
                       </button>
                       {fait && <div className="muted small">déjà relevé</div>}
                     </td>
-                    <td className="small">
+                    <td className="small releve-dernier">
                       {d ? (
                         <>
                           {d.temperature !== null && d.temperature !== undefined ? `${d.temperature} °C` : '—'} · {d.densite !== null && d.densite !== undefined ? d.densite : '—'}
-                          <div className="muted">{d.date} {d.moment === 'soir' ? 'soir' : d.moment === 'matin' ? 'matin' : ''}</div>
+                          <span className="muted"> · {d.date} {d.moment === 'soir' ? 'soir' : d.moment === 'matin' ? 'matin' : ''}</span>
                         </>
-                      ) : <span className="muted">aucun</span>}
+                      ) : <span className="muted">aucun relevé précédent</span>}
                     </td>
-                    <td>
+                    <td data-label="Température °C">
                       <input className="cell-input" type="number" step="0.1" placeholder="—"
                         value={s.temperature || ''} onChange={(e) => set(k, 'temperature', e.target.value)} />
                     </td>
-                    <td>
+                    <td data-label="Densité">
                       <input className="cell-input" type="number" step="0.001" placeholder="—"
                         value={s.densite || ''} onChange={(e) => set(k, 'densite', e.target.value)} />
                       {ecart !== null && ecart !== 0 && (
                         <div className={`delta ${ecart > 0 ? 'up' : 'down'}`}>{ecart > 0 ? '+' : ''}{ecart}</div>
                       )}
                     </td>
-                    <td>
+                    <td data-label="Observation">
                       <input className="cell-input large" type="text" placeholder="—"
                         value={s.notes || ''} onChange={(e) => set(k, 'notes', e.target.value)} />
                     </td>

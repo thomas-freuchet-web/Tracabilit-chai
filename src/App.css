@@ -426,7 +426,10 @@ h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -.01em; }
 }
 .field-hint { font-size: 11px; color: var(--stone-400); margin: 5px 0 0; }
 .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
-.form-actions { display: flex; gap: 9px; margin-top: 16px; }
+.form-actions {
+  display: flex; gap: 9px; margin-top: 16px; padding-top: 12px;
+  position: sticky; bottom: 0; background: var(--white); border-top: 1px solid var(--stone-200);
+}
 
 .analyse-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin: 6px 0 14px; }
 .analyse-cell label { display: block; font-size: 10.5px; font-weight: 600; color: var(--stone-500); margin-bottom: 4px; }
@@ -447,11 +450,18 @@ h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -.01em; }
   z-index: 100; padding: 30px 20px; overflow-y: auto;
 }
 .modal {
-  background: var(--white); border-radius: var(--r-lg); padding: 26px;
+  position: relative; background: var(--white); border-radius: var(--r-lg); padding: 26px;
   width: 100%; max-width: 480px; box-shadow: var(--shadow-lg); margin: auto;
 }
 .modal-lg { max-width: 680px; }
-.modal-title { font-size: 19px; margin: 0 0 5px; }
+.modal-close {
+  position: absolute; top: 14px; right: 14px; width: 30px; height: 30px;
+  border-radius: 50%; border: none; background: var(--stone-100); color: var(--stone-500);
+  font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  padding: 0;
+}
+.modal-close:hover { background: var(--stone-200); color: var(--cellar-800); }
+.modal-title { font-size: 19px; margin: 0 26px 5px 0; }
 .modal-sub { font-size: 12.5px; color: var(--stone-400); margin: 0 0 18px; line-height: 1.5; }
 
 .ref-add-row { display: flex; gap: 8px; }
@@ -534,4 +544,34 @@ h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -.01em; }
 @media (max-width: 480px) {
   .modal-overlay { padding: 14px 8px; }
   .modal { padding: 20px 16px; }
+}
+
+/* Relevé de cave : l'écran le plus utilisé au chai, pensé pour tenir sur un
+   écran de téléphone sans scroller sans arrêt. */
+@media (max-width: 640px) {
+  .panel { padding: 13px; }
+  .page-head { margin-bottom: 14px; }
+  .releve-intro { display: none; }
+
+  .releve-controles { grid-template-columns: 1fr 1fr; gap: 8px 10px; }
+  .releve-controles .field { margin-bottom: 0; }
+  .releve-controles .field:last-child { grid-column: 1 / -1; }
+
+  .releve-table thead { display: none; }
+  .releve-table, .releve-table tbody, .releve-table tr, .releve-table td { display: block; width: 100%; }
+  .releve-table tr {
+    display: grid; grid-template-columns: 1fr 1fr; column-gap: 10px; row-gap: 4px;
+    padding: 9px 11px; border-bottom: 1px solid var(--stone-200);
+  }
+  .releve-table tr:last-child { border-bottom: none; }
+  .releve-table td { border: none; padding: 0; }
+  .releve-table td[data-label]::before {
+    content: attr(data-label); display: block; font-size: 9.5px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .04em; color: var(--stone-400); margin-bottom: 2px;
+  }
+  .releve-table td:nth-child(1), .releve-table td:nth-child(2) { grid-column: 1 / -1; }
+  .releve-table td:nth-child(2) { padding-top: 1px; }
+  .releve-table .releve-dernier { grid-column: 1 / -1; font-size: 11px; margin: -2px 0 2px; }
+  .releve-table .cell-input { width: 100%; }
+  .releve-table td:nth-child(6) { grid-column: 1 / -1; }
 }
