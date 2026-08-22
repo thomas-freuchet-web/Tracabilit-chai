@@ -2885,7 +2885,7 @@ export default function CahierDeChai() {
         </div>
         <div className="topbar-actions">
           <button className="btn btn-primary" onClick={() => ouvrir('apport')}>+ Apport de vendange</button>
-          <span className="muted small">
+          <span className="muted small sync-status">
             {syncEtat.statut === 'en_cours' ? 'Synchronisation…'
               : syncEtat.statut === 'horsligne' ? 'Hors ligne — données locales'
               : syncEtat.quand ? `Synchronisé ${syncEtat.quand.toTimeString().slice(0, 5)}` : ''}

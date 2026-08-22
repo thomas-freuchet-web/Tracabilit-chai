@@ -334,7 +334,7 @@ h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -.01em; }
 /* ==========================================================================
    TABLEAUX
    ========================================================================== */
-.table-wrap { background: var(--white); border: 1px solid var(--stone-200); border-radius: var(--r-lg); overflow: hidden; }
+.table-wrap { background: var(--white); border: 1px solid var(--stone-200); border-radius: var(--r-lg); overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .data-table th {
   text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
@@ -522,6 +522,16 @@ h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -.01em; }
   .timeline-item { grid-template-columns: 1fr; gap: 4px; }
   .lot-head-metrique { width: 100%; }
   .topbar { flex-wrap: wrap; }
-  .topbar-actions { width: 100%; justify-content: space-between; }
+  .topbar-actions { width: 100%; flex-wrap: wrap; justify-content: flex-start; row-gap: 8px; }
+  .topbar-actions .sync-status { order: 3; flex-basis: 100%; }
+  .action-bar { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 12px; }
+  .action-bar .btn { flex-shrink: 0; }
+  .tabs { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .tab-btn { flex-shrink: 0; }
   .setup-card { padding: 22px; }
+}
+
+@media (max-width: 480px) {
+  .modal-overlay { padding: 14px 8px; }
+  .modal { padding: 20px 16px; }
 }
