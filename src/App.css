@@ -48,6 +48,7 @@
 }
 
 * { box-sizing: border-box; }
+html, body { max-width: 100%; overflow-x: hidden; }
 body {
   margin: 0;
   font-family: var(--font-body);
@@ -394,7 +395,7 @@ h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -.01em; }
   color: var(--bordeaux-600); background: var(--bordeaux-100);
   padding: 4px 10px; border-radius: 999px; margin: 0 0 13px;
 }
-.inline-note { font-size: 12px; color: var(--stone-500); margin: 6px 0 12px; display: flex; align-items: center; }
+.inline-note { font-size: 12px; color: var(--stone-500); margin: 6px 0 12px; display: flex; align-items: center; flex-wrap: wrap; row-gap: 2px; }
 .inline-note.warn { color: var(--danger-600); font-weight: 600; }
 .inline-alert {
   background: var(--steel-100); border: 1px solid #c9d8e0; border-radius: var(--r-md);
