@@ -1,0 +1,25 @@
+name: Récap hebdomadaire de vinification
+
+on:
+  schedule:
+    # Tous les lundis à 6h00 UTC (7h ou 8h en France selon l'heure d'été)
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  rapport:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+        working-directory: scripts
+      - run: node rapport-hebdo.mjs
+        working-directory: scripts
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          REPORT_EMAIL_TO: ${{ secrets.REPORT_EMAIL_TO }}
