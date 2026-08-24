@@ -1705,6 +1705,148 @@ function ModaleEntreeStock({ produit, onValider, onFermer }) {
   );
 }
 
+function meilleurProduitCorrespondant(nomCommercial, produits) {
+  if (!nomCommercial) return '';
+  const cible = nomCommercial.toLowerCase();
+  const match = Object.values(produits).find(
+    (p) => p.nom.toLowerCase() === cible || cible.includes(p.nom.toLowerCase()) || p.nom.toLowerCase().includes(cible)
+  );
+  return match ? match.id : '';
+}
+
+function ModaleImportBonLivraison({ produits, onImporter, onFermer }) {
+  const [fichier, setFichier] = useState(null);
+  const [chargement, setChargement] = useState(false);
+  const [erreur, setErreur] = useState('');
+  const [lignes, setLignes] = useState(null);
+
+  const analyser = async () => {
+    if (!fichier) { alert('Choisis un fichier PDF ou une photo'); return; }
+    setChargement(true); setErreur('');
+    try {
+      const base64 = await fichierEnBase64(fichier);
+      const { data, error } = await supabase.functions.invoke('extraire-bon-livraison', {
+        body: { fichierBase64: base64, mimeType: fichier.type },
+      });
+      if (error) {
+        let detail = error.message;
+        let statut = null;
+        if (error.context) {
+          statut = error.context.status;
+          if (typeof error.context.json === 'function') {
+            try {
+              const corps = await error.context.json();
+              if (corps && (corps.error || corps.message)) detail = corps.error || corps.message;
+            } catch { /* corps non-JSON, on garde le message générique */ }
+          }
+        }
+        // eslint-disable-next-line no-console
+        console.error('Erreur import bon de livraison :', { statut, detail, error });
+        throw new Error(statut ? `${detail} (HTTP ${statut})` : detail);
+      }
+      if (data && data.error) throw new Error(data.error);
+      const fournisseurDetecte = data.fournisseur || '';
+      const items = (data.produits || []).map((p) => ({
+        inclus: true,
+        produitIdExistant: meilleurProduitCorrespondant(p.nomCommercial, produits),
+        nomCommercial: p.nomCommercial || '',
+        categorie: CATEGORIES_PRODUIT.includes(p.categorie) ? p.categorie : 'Divers',
+        quantite: p.quantite ? String(p.quantite) : '',
+        unite: p.unite || 'kg',
+        numeroLotFournisseur: p.numeroLotFournisseur || '',
+        dluo: p.dluo || '',
+        fournisseur: fournisseurDetecte,
+      }));
+      if (!items.length) setErreur("Aucun produit détecté dans ce document.");
+      setLignes(items);
+    } catch (e) {
+      setErreur("Impossible d'analyser le document : " + (e && e.message ? e.message : 'erreur inconnue'));
+    }
+    setChargement(false);
+  };
+
+  const majLigne = (i, k, v) => setLignes((p) => p.map((l, idx) => (idx === i ? { ...l, [k]: v } : l)));
+
+  const incomplete = (l) => !l.numeroLotFournisseur || !l.dluo || !l.fournisseur || !l.nomCommercial;
+
+  const confirmer = () => {
+    const retenues = lignes.filter((l) => l.inclus);
+    if (!retenues.length) { alert('Sélectionne au moins une ligne'); return; }
+    for (const l of retenues) {
+      if (!l.nomCommercial) { alert('Chaque ligne retenue doit avoir un nom de produit'); return; }
+      if (!l.quantite || Number(l.quantite) <= 0) { alert(`Quantité invalide pour "${l.nomCommercial}"`); return; }
+    }
+    const res = onImporter(retenues);
+    alert(`Importé : ${res.nouveaux} nouveau(x) produit(s), ${res.entrees} entrée(s) de stock enregistrée(s).`);
+    onFermer();
+  };
+
+  return (
+    <Modal title="Importer un bon de livraison" subtitle="Envoie une photo ou un PDF du bon — vérifie et complète les informations manquantes avant de valider l'entrée en stock." onClose={onFermer} large>
+      {!lignes ? (
+        <>
+          <Field label="Document" hint="PDF ou photo — 12 Mo maximum">
+            <input type="file" accept="application/pdf,image/*" onChange={(e) => setFichier(e.target.files[0])} disabled={chargement} />
+          </Field>
+          {erreur && <p className="inline-note warn">{erreur}</p>}
+          <div className="form-actions">
+            <button className="btn btn-primary" onClick={analyser} disabled={chargement || !fichier}>
+              {chargement ? 'Analyse en cours…' : 'Analyser'}
+            </button>
+            <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
+          </div>
+        </>
+      ) : (
+        <>
+          {erreur && <p className="inline-note warn">{erreur}</p>}
+          {lignes.map((l, i) => (
+            <div className="panel-inset" key={i} style={{ marginBottom: 12, opacity: l.inclus ? 1 : 0.5 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, cursor: 'pointer' }}>
+                <input type="checkbox" checked={l.inclus} onChange={(e) => majLigne(i, 'inclus', e.target.checked)} />
+                <strong>{l.nomCommercial || 'Produit sans nom'}</strong>
+                {incomplete(l) && <span className="badge badge-bordeaux">À compléter</span>}
+              </label>
+              <Field label="Produit correspondant">
+                <select value={l.produitIdExistant} onChange={(e) => majLigne(i, 'produitIdExistant', e.target.value)}>
+                  <option value="">— Créer un nouveau produit —</option>
+                  {Object.values(produits).map((p) => <option key={p.id} value={p.id}>{p.nom}</option>)}
+                </select>
+              </Field>
+              {!l.produitIdExistant && (
+                <div className="field-grid">
+                  <Field label="Nom commercial"><input type="text" value={l.nomCommercial} onChange={(e) => majLigne(i, 'nomCommercial', e.target.value)} /></Field>
+                  <Field label="Catégorie">
+                    <select value={l.categorie} onChange={(e) => majLigne(i, 'categorie', e.target.value)}>
+                      {CATEGORIES_PRODUIT.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </Field>
+                </div>
+              )}
+              <div className="field-grid">
+                <Field label={`Quantité (${l.unite})`}><input type="number" step="0.01" value={l.quantite} onChange={(e) => majLigne(i, 'quantite', e.target.value)} /></Field>
+                <Field label="Unité">
+                  <select value={l.unite} onChange={(e) => majLigne(i, 'unite', e.target.value)}>
+                    {['kg', 'g', 'L', 'mL', 'unité'].map((u) => <option key={u} value={u}>{u}</option>)}
+                  </select>
+                </Field>
+              </div>
+              <div className="field-grid">
+                <Field label="N° de lot fournisseur"><input type="text" value={l.numeroLotFournisseur} onChange={(e) => majLigne(i, 'numeroLotFournisseur', e.target.value)} /></Field>
+                <Field label="DLUO"><input type="date" value={l.dluo} onChange={(e) => majLigne(i, 'dluo', e.target.value)} /></Field>
+              </div>
+              <Field label="Fournisseur"><input type="text" value={l.fournisseur} onChange={(e) => majLigne(i, 'fournisseur', e.target.value)} /></Field>
+            </div>
+          ))}
+          <div className="form-actions">
+            <button className="btn btn-primary" onClick={confirmer}>Enregistrer l'entrée en stock</button>
+            <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
 /* ==========================================================================
    APPLICATION
    ========================================================================== */
@@ -2537,6 +2679,42 @@ export default function CahierDeChai() {
     }));
     return true;
   };
+  const importerProduitsIA = (lignes) => {
+    const nouveauxProduits = {};
+    const mouvementsParProduit = {};
+    let nbNouveaux = 0, nbEntrees = 0;
+    lignes.forEach((ligne) => {
+      let produitId = ligne.produitIdExistant;
+      if (!produitId) {
+        produitId = uid('prod');
+        nouveauxProduits[produitId] = {
+          id: produitId, nom: ligne.nomCommercial || 'Produit sans nom',
+          categorie: CATEGORIES_PRODUIT.includes(ligne.categorie) ? ligne.categorie : 'Divers',
+          unite: ligne.unite || 'kg', seuil: 0, fournisseur: ligne.fournisseur || '',
+          manipType: '', mouvements: [],
+        };
+        nbNouveaux++;
+      }
+      const q = Number(ligne.quantite);
+      if (q > 0) {
+        if (!mouvementsParProduit[produitId]) mouvementsParProduit[produitId] = [];
+        mouvementsParProduit[produitId].push({
+          id: uid('mv'), sens: 'entree', quantite: q, date: today(),
+          numeroLotFournisseur: ligne.numeroLotFournisseur || '', dluo: ligne.dluo || '',
+          fournisseur: ligne.fournisseur || '', motif: 'Réception (import IA)',
+        });
+        nbEntrees++;
+      }
+    });
+    setProduits((prev) => {
+      const next = { ...prev, ...nouveauxProduits };
+      Object.entries(mouvementsParProduit).forEach(([id, mvts]) => {
+        next[id] = { ...next[id], mouvements: [...(next[id].mouvements || []), ...mvts] };
+      });
+      return next;
+    });
+    return { nouveaux: nbNouveaux, entrees: nbEntrees };
+  };
 
   /* =========================================================================
      ASSISTANT DE PARAMÉTRAGE
@@ -3139,6 +3317,8 @@ export default function CahierDeChai() {
         return <ModaleProduit onValider={ajouterProduit} onFermer={fermer} />;
       case 'entreeStock':
         return <ModaleEntreeStock produit={produits[payload.produitId]} onValider={entrerStock} onFermer={fermer} />;
+      case 'importBonLivraison':
+        return <ModaleImportBonLivraison produits={produits} onImporter={importerProduitsIA} onFermer={fermer} />;
       case 'produitDetail':
         return <ModaleProduitDetail produit={produits[payload.produitId]}
           onEntree={() => ouvrir('entreeStock', { produitId: payload.produitId })} onFermer={fermer} />;
@@ -4040,7 +4220,10 @@ export default function CahierDeChai() {
               <header className="page-head">
                 <div className="page-head-row">
                   <h1>Produits œnologiques</h1>
-                  <button className="btn btn-primary" onClick={() => ouvrir('produit')}>+ Nouveau produit</button>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn btn-outline" onClick={() => ouvrir('importBonLivraison')}>🤖 Importer un bon de livraison</button>
+                    <button className="btn btn-primary" onClick={() => ouvrir('produit')}>+ Nouveau produit</button>
+                  </div>
                 </div>
                 <p>Le stock se décrémente automatiquement à chaque ajout en cuve.</p>
               </header>
