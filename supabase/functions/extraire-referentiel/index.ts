@@ -17,7 +17,14 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const PROMPT = `Tu analyses un document viticole (liste de cuves, de cuverie, de cépages ou de parcelles), fourni en photo ou en PDF. Réponds UNIQUEMENT avec un objet JSON strictement de cette forme, sans texte autour, sans balises markdown :
+const CONSIGNES_PAR_SCOPE: Record<string, string> = {
+  lieux: "Ce document ne concerne QUE les lieux et contenants (cuveries, chais à barriques, cuves, barriques). Ignore tout cépage ou parcelle éventuellement mentionné : laisse ces deux tableaux vides.",
+  cepages: "Ce document ne concerne QUE les cépages et parcelles. Ignore tout lieu ou contenant éventuellement mentionné : laisse ces deux tableaux vides.",
+};
+
+function construirePrompt(scope?: string) {
+  const consigne = (scope && CONSIGNES_PAR_SCOPE[scope]) || "";
+  return `Tu analyses un document viticole (liste de cuves, de cuverie, de cépages ou de parcelles), fourni en photo ou en PDF. ${consigne} Réponds UNIQUEMENT avec un objet JSON strictement de cette forme, sans texte autour, sans balises markdown :
 {
   "lieux": [{"nom": "string", "type": "cuverie ou chai_barriques"}],
   "contenants": [{"nom": "string", "lieuNom": "string (doit correspondre à un nom de lieux[] si possible)", "capacite": nombre en hL, "materiau": "string"}],
@@ -25,6 +32,7 @@ const PROMPT = `Tu analyses un document viticole (liste de cuves, de cuverie, de
   "parcelles": [{"nom": "string", "cepageNom": "string (doit correspondre à un nom de cepages[] si possible)", "surface": nombre en hectares, "commune": "string", "appellation": "string", "cadastre": "string"}]
 }
 Mets un tableau vide pour toute catégorie absente du document. N'invente aucune valeur non présente dans le document — laisse "" ou 0 plutôt que de deviner. Pour la couleur d'un cépage que tu reconnais (Merlot, Cabernet Sauvignon, Sauvignon Blanc, etc.), indique la couleur de raisin réelle même si le document ne la précise pas.`;
+}
 
 function reponseJson(corps: unknown, status = 200) {
   return new Response(JSON.stringify(corps), {
@@ -49,7 +57,7 @@ Deno.serve(async (req) => {
       return reponseJson({ error: "Non authentifié" }, 401);
     }
 
-    const { fichierBase64, mimeType } = await req.json();
+    const { fichierBase64, mimeType, scope } = await req.json();
     if (!fichierBase64 || !mimeType) throw new Error("Fichier manquant");
 
     const geminiRes = await fetch(
@@ -61,7 +69,7 @@ Deno.serve(async (req) => {
           contents: [
             {
               parts: [
-                { text: PROMPT },
+                { text: construirePrompt(scope) },
                 { inline_data: { mime_type: mimeType, data: fichierBase64 } },
               ],
             },

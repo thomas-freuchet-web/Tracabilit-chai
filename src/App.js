@@ -1410,11 +1410,11 @@ function ModaleContenants({ lieux, lieuInitial, onValider, onFermer }) {
   );
 }
 
-function ModaleCepage({ onValider, onFermer }) {
-  const [f, setF] = useState({ nom: '', couleur: 'rouge' });
+function ModaleCepage({ cepage, onValider, onFermer }) {
+  const [f, setF] = useState({ nom: cepage ? cepage.nom : '', couleur: cepage ? cepage.couleur : 'rouge' });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   return (
-    <Modal title="Nouveau cépage" onClose={onFermer}>
+    <Modal title={cepage ? 'Modifier le cépage' : 'Nouveau cépage'} onClose={onFermer}>
       <Field label="Nom"><input type="text" value={f.nom} onChange={(e) => set('nom', e.target.value)} /></Field>
       <Field label="Couleur du vin produit" hint="Détermine la couleur affichée pour les lots issus de ce cépage">
         <select value={f.couleur} onChange={(e) => set('couleur', e.target.value)}>
@@ -1422,7 +1422,7 @@ function ModaleCepage({ onValider, onFermer }) {
         </select>
       </Field>
       <div className="form-actions">
-        <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>Créer</button>
+        <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>{cepage ? 'Enregistrer' : 'Créer'}</button>
         <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
       </div>
     </Modal>
@@ -1466,8 +1466,14 @@ function ModaleParcelles({ cepages, onValider, onFermer }) {
 }
 
 const LABELS_IA = { lieux: 'Lieux', contenants: 'Contenants', cepages: 'Cépages', parcelles: 'Parcelles' };
+const CATEGORIES_PAR_SCOPE = { lieux: ['lieux', 'contenants'], cepages: ['cepages', 'parcelles'] };
+const SOUS_TITRES_IA = {
+  lieux: "Envoie une photo ou un PDF listant tes cuveries, chais et cuves — l'IA propose une liste à valider avant import, rien n'est créé automatiquement.",
+  cepages: "Envoie une photo ou un PDF listant tes cépages et parcelles — l'IA propose une liste à valider avant import, rien n'est créé automatiquement.",
+};
 
-function ModaleImportIA({ onImporter, onFermer }) {
+function ModaleImportIA({ scope, onImporter, onFermer }) {
+  const categories = CATEGORIES_PAR_SCOPE[scope] || Object.keys(LABELS_IA);
   const [fichier, setFichier] = useState(null);
   const [chargement, setChargement] = useState(false);
   const [erreur, setErreur] = useState('');
@@ -1480,7 +1486,7 @@ function ModaleImportIA({ onImporter, onFermer }) {
     try {
       const base64 = await fichierEnBase64(fichier);
       const { data, error } = await supabase.functions.invoke('extraire-referentiel', {
-        body: { fichierBase64: base64, mimeType: fichier.type },
+        body: { fichierBase64: base64, mimeType: fichier.type, scope },
       });
       if (error) {
         // supabase-js masque le vrai message derrière "non-2xx status code" :
@@ -1506,7 +1512,7 @@ function ModaleImportIA({ onImporter, onFermer }) {
       if (data && data.error) throw new Error(data.error);
       setResultat(data);
       const sel = {};
-      Object.keys(LABELS_IA).forEach((cat) => {
+      categories.forEach((cat) => {
         (data[cat] || []).forEach((_, i) => { sel[`${cat}-${i}`] = true; });
       });
       setSelection(sel);
@@ -1520,18 +1526,19 @@ function ModaleImportIA({ onImporter, onFermer }) {
 
   const confirmer = () => {
     const filtre = {};
-    Object.keys(LABELS_IA).forEach((cat) => {
+    categories.forEach((cat) => {
       filtre[cat] = (resultat[cat] || []).filter((_, i) => selection[`${cat}-${i}`]);
     });
     const res = onImporter(filtre);
-    alert(`Importé : ${res.lieux} lieu(x), ${res.contenants} contenant(s), ${res.cepages} cépage(s), ${res.parcelles} parcelle(s). Les doublons (noms déjà existants) ont été ignorés.`);
+    const parties = categories.map((cat) => `${res[cat]} ${LABELS_IA[cat].toLowerCase()}`);
+    alert(`Importé : ${parties.join(', ')}. Les doublons (noms déjà existants) ont été ignorés.`);
     onFermer();
   };
 
-  const rienDetecte = resultat && Object.keys(LABELS_IA).every((cat) => !(resultat[cat] || []).length);
+  const rienDetecte = resultat && categories.every((cat) => !(resultat[cat] || []).length);
 
   return (
-    <Modal title="Importer avec l'IA" subtitle="Envoie une photo ou un PDF listant tes cuves, cuveries, cépages ou parcelles — l'IA propose une liste à valider avant import, rien n'est créé automatiquement." onClose={onFermer} large>
+    <Modal title="Importer avec l'IA" subtitle={SOUS_TITRES_IA[scope] || "Envoie une photo ou un PDF listant tes cuves, cuveries, cépages ou parcelles — l'IA propose une liste à valider avant import, rien n'est créé automatiquement."} onClose={onFermer} large>
       {!resultat ? (
         <>
           <Field label="Document" hint="PDF ou photo — 12 Mo maximum">
@@ -1548,7 +1555,7 @@ function ModaleImportIA({ onImporter, onFermer }) {
       ) : (
         <>
           {rienDetecte && <p className="muted">Rien n'a été détecté dans ce document.</p>}
-          {Object.keys(LABELS_IA).map((cat) => (resultat[cat] || []).length > 0 && (
+          {categories.map((cat) => (resultat[cat] || []).length > 0 && (
             <div className="panel-inset" key={cat} style={{ marginBottom: 12 }}>
               <h4>{LABELS_IA[cat]} ({resultat[cat].length})</h4>
               {resultat[cat].map((item, i) => (
@@ -2398,6 +2405,14 @@ export default function CahierDeChai() {
     setCepages((p) => ({ ...p, [id]: { id, nom: f.nom, couleur: f.couleur || 'rouge' } }));
     return true;
   };
+  const majCepage = (id, f) => {
+    if (!f.nom) { alert('Nom obligatoire'); return false; }
+    if (Object.values(cepages).some((c) => c.id !== id && c.nom.toLowerCase() === f.nom.toLowerCase())) {
+      alert('Ce cépage existe déjà'); return false;
+    }
+    setCepages((p) => ({ ...p, [id]: { ...p[id], nom: f.nom, couleur: f.couleur || 'rouge' } }));
+    return true;
+  };
   const supprimerCepage = (id) => {
     if (Object.values(parcelles).some((p) => p.cepageId === id)) {
       alert('Des parcelles utilisent ce cépage.'); return;
@@ -3006,9 +3021,9 @@ export default function CahierDeChai() {
                 <p className="setup-help">La couleur du cépage détermine celle de tes lots dans toute l'application.</p>
                 <div className="chips-wrap">
                   {Object.values(cepages).map((c) => (
-                    <span className="chip" key={c.id}>
+                    <span className="chip" key={c.id} style={{ cursor: 'pointer' }} onClick={() => ouvrir('cepage', { cepage: c })} title="Modifier">
                       <ColorDot couleur={c.couleur} />{c.nom}
-                      <button onClick={() => supprimerCepage(c.id)}>✕</button>
+                      <button onClick={(e) => { e.stopPropagation(); supprimerCepage(c.id); }}>✕</button>
                     </span>
                   ))}
                 </div>
@@ -3115,11 +3130,11 @@ export default function CahierDeChai() {
       case 'contenants':
         return <ModaleContenants lieux={lieux} lieuInitial={payload.lieuId} onValider={ajouterContenants} onFermer={fermer} />;
       case 'cepage':
-        return <ModaleCepage onValider={ajouterCepage} onFermer={fermer} />;
+        return <ModaleCepage cepage={payload.cepage} onValider={payload.cepage ? (f) => majCepage(payload.cepage.id, f) : ajouterCepage} onFermer={fermer} />;
       case 'parcelles':
         return <ModaleParcelles cepages={cepages} onValider={ajouterParcelles} onFermer={fermer} />;
       case 'importIA':
-        return <ModaleImportIA onImporter={importerReferentielIA} onFermer={fermer} />;
+        return <ModaleImportIA scope={payload.scope} onImporter={importerReferentielIA} onFermer={fermer} />;
       case 'produit':
         return <ModaleProduit onValider={ajouterProduit} onFermer={fermer} />;
       case 'entreeStock':
@@ -4252,7 +4267,10 @@ export default function CahierDeChai() {
               <div className="panel">
                 <div className="panel-head">
                   <h3 className="panel-title">Lieux ({Object.keys(lieux).length})</h3>
-                  <button className="btn btn-primary btn-sm" onClick={() => ouvrir('lieu')}>+ Lieu</button>
+                  <div className="quick-row">
+                    <button className="btn btn-outline btn-sm" onClick={() => ouvrir('importIA', { scope: 'lieux' })}>🤖 Importer avec l'IA</button>
+                    <button className="btn btn-primary btn-sm" onClick={() => ouvrir('lieu')}>+ Lieu</button>
+                  </div>
                 </div>
                 {Object.values(lieux).map((l) => {
                   const liste = Object.values(contenants).filter((c) => c.lieuId === l.id);
@@ -4284,7 +4302,7 @@ export default function CahierDeChai() {
                 <div className="panel-head">
                   <h3 className="panel-title">Cépages & parcelles</h3>
                   <div className="quick-row">
-                    <button className="btn btn-outline btn-sm" onClick={() => ouvrir('importIA')}>🤖 Importer avec l'IA</button>
+                    <button className="btn btn-outline btn-sm" onClick={() => ouvrir('importIA', { scope: 'cepages' })}>🤖 Importer avec l'IA</button>
                     <button className="btn btn-outline btn-sm" onClick={() => ouvrir('cepage')}>+ Cépage</button>
                     <button className="btn btn-primary btn-sm" onClick={() => ouvrir('parcelles')}>+ Parcelles</button>
                   </div>
@@ -4296,6 +4314,7 @@ export default function CahierDeChai() {
                       <div className="setup-group-head">
                         <strong><ColorDot couleur={cep.couleur} />{cep.nom}</strong>
                         <span className="muted small">{COULEURS[cep.couleur]} · {liste.length} parcelle{liste.length > 1 ? 's' : ''} · {round2(liste.reduce((s, p) => s + (Number(p.surface) || 0), 0))} ha</span>
+                        <button className="btn btn-ghost btn-sm" onClick={() => ouvrir('cepage', { cepage: cep })}>Modifier</button>
                         <button className="btn btn-danger btn-sm" onClick={() => supprimerCepage(cep.id)}>Retirer</button>
                       </div>
                       <div className="chips-wrap">
