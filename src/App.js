@@ -45,6 +45,11 @@ const TRAVAUX = [
   'Contrôle température', 'Dégustation',
 ];
 
+// Motifs de "Sortie de volume" considérés comme déchet viticole (marc, lies,
+// bourbes...) plutôt que perte technique — cumulés dans le panneau "Poubelle
+// viticole" de l'accueil.
+const MOTIFS_POUBELLE = ['Marc / rafle', 'Lies / bourbes'];
+
 // Registre unique de manipulations — modèle FGVB (édition juillet 2025)
 const MANIP_TYPES = {
   enrichissement: { label: 'Enrichissement', delai: "Inscription le jour même de l'opération", sheet: 'Enrichissement' },
@@ -1066,7 +1071,7 @@ function ModalePerte({ lot, contenants, onValider, onFermer }) {
       <Field label="Motif">
         <select value={f.motif} onChange={(e) => set('motif', e.target.value)}>
           <option value="">— Sélectionner —</option>
-          {['Lies / bourbes', 'Perte de cave', 'Échantillon', 'Dégustation', 'Sortie vrac', 'Distillation', 'Autre'].map((m) => <option key={m} value={m}>{m}</option>)}
+          {['Marc / rafle', 'Lies / bourbes', 'Perte de cave', 'Échantillon', 'Dégustation', 'Sortie vrac', 'Distillation', 'Autre'].map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
       </Field>
       <div className="form-actions">
@@ -1702,6 +1707,21 @@ export default function CahierDeChai() {
   );
 
   const alertesPeremption = useMemo(() => alertesDluo(produits, 60), [produits]);
+
+  /* --- Poubelle viticole : cumul des sorties de volume liées au déchet
+         (marc, lies, bourbes), tous lots et tous temps confondus --- */
+  const poubelle = useMemo(() => {
+    const parMotif = {};
+    let total = 0;
+    Object.values(lots).forEach((l) => {
+      (l.operations || []).forEach((o) => {
+        if (o.type !== 'perte' || !MOTIFS_POUBELLE.includes(o.motif)) return;
+        parMotif[o.motif] = round2((parMotif[o.motif] || 0) + (Number(o.volume) || 0));
+        total += Number(o.volume) || 0;
+      });
+    });
+    return { parMotif, total: round2(total) };
+  }, [lots]);
 
   /* =========================================================================
      ÉCRITURE : helper central pour ajouter une opération à un lot
@@ -2974,6 +2994,24 @@ export default function CahierDeChai() {
                       <span className="warn-text">{a.jours < 0 ? `périmé depuis ${-a.jours} j` : `dans ${a.jours} j`}</span>
                     </div>
                   ))}
+                </div>
+              )}
+
+              {poubelle.total > 0 && (
+                <div className="panel">
+                  <div className="panel-head">
+                    <h3 className="panel-title">Poubelle viticole</h3>
+                    <span className="muted small">{poubelle.total} hL évacués au total</span>
+                  </div>
+                  {MOTIFS_POUBELLE.filter((m) => poubelle.parMotif[m] > 0).map((m) => (
+                    <div className="ref-list-row" key={m}>
+                      <span>{m}</span>
+                      <strong>{poubelle.parMotif[m]} hL</strong>
+                    </div>
+                  ))}
+                  <p className="muted small" style={{ margin: '10px 0 0' }}>
+                    Marc, rafle, lies et bourbes évacués via "Sortie de volume" — cumul depuis le début de l'activité.
+                  </p>
                 </div>
               )}
 
