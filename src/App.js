@@ -3,6 +3,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Responsi
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabaseClient';
 import { chargerEtat, sauvegarderEtat } from './lib/cloudStore';
+import { genererPdfCuve, telechargerBlob } from './lib/pdfRecap';
 import './App.css';
 
 /* ==========================================================================
@@ -2079,6 +2080,11 @@ export default function CahierDeChai() {
         }],
       },
     }));
+    if (suivante === 'elevage') {
+      genererPdfCuve(l, contenants, parcelles, cepages)
+        .then((blob) => telechargerBlob(blob, `fin-vinification-${l.code.replace(/[^\w-]/g, '')}.pdf`))
+        .catch((e) => alert("Le PDF de fin de vinification n'a pas pu être généré : " + (e && e.message ? e.message : 'erreur inconnue')));
+    }
   };
 
   const supprimerLot = (lotId) => {
