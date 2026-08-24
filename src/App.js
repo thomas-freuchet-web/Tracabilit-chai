@@ -162,6 +162,17 @@ async function ouvrirBulletin(id) {
 
 const formaterTaille = (o) => (o > 1048576 ? `${round2(o / 1048576)} Mo` : `${Math.round(o / 1024)} Ko`);
 
+/* --- Fichier -> base64 (sans le préfixe data:...;base64,), pour l'envoyer à
+       la fonction d'extraction IA --- */
+function fichierEnBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 /* --- Volume d'un lot : somme de ses contenants (source unique de vérité) --- */
 function volumeLot(lot) {
   if (!lot || !lot.contenants) return 0;
@@ -1454,6 +1465,95 @@ function ModaleParcelles({ cepages, onValider, onFermer }) {
   );
 }
 
+const LABELS_IA = { lieux: 'Lieux', contenants: 'Contenants', cepages: 'Cépages', parcelles: 'Parcelles' };
+
+function ModaleImportIA({ onImporter, onFermer }) {
+  const [fichier, setFichier] = useState(null);
+  const [chargement, setChargement] = useState(false);
+  const [erreur, setErreur] = useState('');
+  const [resultat, setResultat] = useState(null);
+  const [selection, setSelection] = useState({});
+
+  const analyser = async () => {
+    if (!fichier) { alert('Choisis un fichier PDF ou une photo'); return; }
+    setChargement(true); setErreur('');
+    try {
+      const base64 = await fichierEnBase64(fichier);
+      const { data, error } = await supabase.functions.invoke('extraire-referentiel', {
+        body: { fichierBase64: base64, mimeType: fichier.type },
+      });
+      if (error) throw error;
+      if (data && data.error) throw new Error(data.error);
+      setResultat(data);
+      const sel = {};
+      Object.keys(LABELS_IA).forEach((cat) => {
+        (data[cat] || []).forEach((_, i) => { sel[`${cat}-${i}`] = true; });
+      });
+      setSelection(sel);
+    } catch (e) {
+      setErreur("Impossible d'analyser le document : " + (e && e.message ? e.message : 'erreur inconnue'));
+    }
+    setChargement(false);
+  };
+
+  const toggle = (cle) => setSelection((p) => ({ ...p, [cle]: !p[cle] }));
+
+  const confirmer = () => {
+    const filtre = {};
+    Object.keys(LABELS_IA).forEach((cat) => {
+      filtre[cat] = (resultat[cat] || []).filter((_, i) => selection[`${cat}-${i}`]);
+    });
+    const res = onImporter(filtre);
+    alert(`Importé : ${res.lieux} lieu(x), ${res.contenants} contenant(s), ${res.cepages} cépage(s), ${res.parcelles} parcelle(s). Les doublons (noms déjà existants) ont été ignorés.`);
+    onFermer();
+  };
+
+  const rienDetecte = resultat && Object.keys(LABELS_IA).every((cat) => !(resultat[cat] || []).length);
+
+  return (
+    <Modal title="Importer avec l'IA" subtitle="Envoie une photo ou un PDF listant tes cuves, cuveries, cépages ou parcelles — l'IA propose une liste à valider avant import, rien n'est créé automatiquement." onClose={onFermer} large>
+      {!resultat ? (
+        <>
+          <Field label="Document" hint="PDF ou photo — 12 Mo maximum">
+            <input type="file" accept="application/pdf,image/*" onChange={(e) => setFichier(e.target.files[0])} disabled={chargement} />
+          </Field>
+          {erreur && <p className="inline-note warn">{erreur}</p>}
+          <div className="form-actions">
+            <button className="btn btn-primary" onClick={analyser} disabled={chargement || !fichier}>
+              {chargement ? 'Analyse en cours…' : 'Analyser'}
+            </button>
+            <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
+          </div>
+        </>
+      ) : (
+        <>
+          {rienDetecte && <p className="muted">Rien n'a été détecté dans ce document.</p>}
+          {Object.keys(LABELS_IA).map((cat) => (resultat[cat] || []).length > 0 && (
+            <div className="panel-inset" key={cat} style={{ marginBottom: 12 }}>
+              <h4>{LABELS_IA[cat]} ({resultat[cat].length})</h4>
+              {resultat[cat].map((item, i) => (
+                <label className="ref-list-row" key={i} style={{ cursor: 'pointer' }}>
+                  <span>
+                    <input type="checkbox" checked={!!selection[`${cat}-${i}`]} onChange={() => toggle(`${cat}-${i}`)} style={{ marginRight: 8 }} />
+                    {cat === 'lieux' && `${item.nom} (${item.type === 'chai_barriques' ? 'chai à barriques' : 'cuverie'})`}
+                    {cat === 'contenants' && `${item.nom} — ${item.lieuNom || '?'}${item.capacite ? ` · ${item.capacite} hL` : ''}`}
+                    {cat === 'cepages' && `${item.nom}${item.couleur ? ` (${item.couleur})` : ''}`}
+                    {cat === 'parcelles' && `${item.nom} — ${item.cepageNom || '?'}${item.surface ? ` · ${item.surface} ha` : ''}`}
+                  </span>
+                </label>
+              ))}
+            </div>
+          ))}
+          <div className="form-actions">
+            <button className="btn btn-primary" onClick={confirmer} disabled={rienDetecte}>Importer la sélection</button>
+            <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
 function ModaleProduit({ onValider, onFermer }) {
   const [f, setF] = useState({ nom: '', categorie: 'Divers', unite: 'kg', seuil: '', fournisseur: '', manipType: '' });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
@@ -2311,6 +2411,64 @@ export default function CahierDeChai() {
     setParcelles((p) => { const n = { ...p }; delete n[id]; return n; });
   };
 
+  /* --- Fusionne l'extraction IA (validée par l'utilisateur) dans le
+         référentiel existant, en ignorant les noms déjà présents --- */
+  const importerReferentielIA = (extrait) => {
+    const nouveauxLieux = {};
+    const lieuIdParNom = {};
+    Object.values(lieux).forEach((l) => { lieuIdParNom[l.nom.toLowerCase()] = l.id; });
+    (extrait.lieux || []).forEach((l) => {
+      if (!l.nom || lieuIdParNom[l.nom.toLowerCase()]) return;
+      const id = uid('lieu');
+      nouveauxLieux[id] = { id, nom: l.nom, type: l.type === 'chai_barriques' ? 'chai_barriques' : 'cuverie', usage: 'vinification' };
+      lieuIdParNom[l.nom.toLowerCase()] = id;
+    });
+
+    const nouveauxContenants = {};
+    const premierLieuId = Object.keys(lieux)[0] || Object.keys(nouveauxLieux)[0] || '';
+    (extrait.contenants || []).forEach((c) => {
+      if (!c.nom || Object.values(contenants).some((x) => x.nom.toLowerCase() === c.nom.toLowerCase())) return;
+      const lieuId = lieuIdParNom[(c.lieuNom || '').toLowerCase()] || premierLieuId;
+      if (!lieuId) return;
+      const id = uid('ct');
+      nouveauxContenants[id] = { id, nom: c.nom, lieuId, type: 'cuve', capacite: Number(c.capacite) || 0, materiau: c.materiau || 'Inox' };
+    });
+
+    const nouveauxCepages = {};
+    const cepageIdParNom = {};
+    Object.values(cepages).forEach((c) => { cepageIdParNom[c.nom.toLowerCase()] = c.id; });
+    (extrait.cepages || []).forEach((c) => {
+      if (!c.nom || cepageIdParNom[c.nom.toLowerCase()]) return;
+      const id = uid('cep');
+      nouveauxCepages[id] = { id, nom: c.nom, couleur: ['rouge', 'blanc', 'rose'].includes(c.couleur) ? c.couleur : 'rouge' };
+      cepageIdParNom[c.nom.toLowerCase()] = id;
+    });
+
+    const nouvellesParcelles = {};
+    (extrait.parcelles || []).forEach((p) => {
+      if (!p.nom || Object.values(parcelles).some((x) => x.nom.toLowerCase() === p.nom.toLowerCase())) return;
+      const cepageId = cepageIdParNom[(p.cepageNom || '').toLowerCase()];
+      if (!cepageId) return;
+      const id = uid('parc');
+      nouvellesParcelles[id] = {
+        id, nom: p.nom, cepageId, surface: Number(p.surface) || 0,
+        appellation: p.appellation || '', anneePlantation: '', commune: p.commune || '', cadastre: p.cadastre || '',
+      };
+    });
+
+    setLieux((prev) => ({ ...prev, ...nouveauxLieux }));
+    setContenants((prev) => ({ ...prev, ...nouveauxContenants }));
+    setCepages((prev) => ({ ...prev, ...nouveauxCepages }));
+    setParcelles((prev) => ({ ...prev, ...nouvellesParcelles }));
+
+    return {
+      lieux: Object.keys(nouveauxLieux).length,
+      contenants: Object.keys(nouveauxContenants).length,
+      cepages: Object.keys(nouveauxCepages).length,
+      parcelles: Object.keys(nouvellesParcelles).length,
+    };
+  };
+
   const ajouterProduit = (f) => {
     if (!f.nom) { alert('Nom obligatoire'); return false; }
     const id = uid('prod');
@@ -2752,6 +2910,9 @@ export default function CahierDeChai() {
           <p className="setup-sub">
             Tout est modifiable ensuite dans les réglages. Tu peux aussi partir d'un exemple type et l'adapter.
           </p>
+          <button className="btn btn-outline" style={{ marginBottom: 18 }} onClick={() => ouvrir('importIA')}>
+            🤖 Importer avec l'IA depuis un document (cuves, cépages, parcelles…)
+          </button>
 
           <div className="setup-steps">
             {etapes.map((e, i) => (
@@ -2937,6 +3098,8 @@ export default function CahierDeChai() {
         return <ModaleCepage onValider={ajouterCepage} onFermer={fermer} />;
       case 'parcelles':
         return <ModaleParcelles cepages={cepages} onValider={ajouterParcelles} onFermer={fermer} />;
+      case 'importIA':
+        return <ModaleImportIA onImporter={importerReferentielIA} onFermer={fermer} />;
       case 'produit':
         return <ModaleProduit onValider={ajouterProduit} onFermer={fermer} />;
       case 'entreeStock':
@@ -4101,6 +4264,7 @@ export default function CahierDeChai() {
                 <div className="panel-head">
                   <h3 className="panel-title">Cépages & parcelles</h3>
                   <div className="quick-row">
+                    <button className="btn btn-outline btn-sm" onClick={() => ouvrir('importIA')}>🤖 Importer avec l'IA</button>
                     <button className="btn btn-outline btn-sm" onClick={() => ouvrir('cepage')}>+ Cépage</button>
                     <button className="btn btn-primary btn-sm" onClick={() => ouvrir('parcelles')}>+ Parcelles</button>
                   </div>
