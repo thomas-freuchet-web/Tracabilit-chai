@@ -2124,13 +2124,38 @@ export default function CahierDeChai() {
   };
 
   const supprimerOperation = (lotId, opId) => {
-    const op = (lots[lotId].operations || []).find((o) => o.id === opId);
+    const lot = lots[lotId];
+    const op = (lot.operations || []).find((o) => o.id === opId);
     if (!op) return;
-    if (['transfert', 'reception', 'origine', 'deplacement', 'apport', 'perte', 'mise'].includes(op.type)) {
+
+    // Une "sortie de volume" peut être annulée en toute sécurité : on restitue
+    // le volume au contenant, sauf s'il a depuis été repris par un autre lot.
+    if (op.type === 'perte') {
+      const occ = occupationParContenant[op.contenantId];
+      if (occ && occ.lotId !== lotId) {
+        alert("Impossible d'annuler cette sortie : le contenant est maintenant occupé par un autre lot. Corrige manuellement si besoin.");
+        return;
+      }
+      if (!window.confirm(`Annuler cette sortie de volume et restituer ${op.volume} hL au lot ?`)) return;
+      setLots((prev) => {
+        const l = { ...prev[lotId] };
+        const dejaPresent = (l.contenants || []).some((c) => c.contenantId === op.contenantId);
+        l.contenants = dejaPresent
+          ? l.contenants.map((c) => (c.contenantId === op.contenantId ? { ...c, volume: round2(c.volume + op.volume) } : c))
+          : [...(l.contenants || []), { contenantId: op.contenantId, volume: op.volume }];
+        l.operations = l.operations.filter((o) => o.id !== opId);
+        if (volumeLot(l) > 0.001) l.statut = 'actif';
+        return { ...prev, [lotId]: l };
+      });
+      return;
+    }
+
+    if (['transfert', 'reception', 'origine', 'deplacement', 'apport', 'mise'].includes(op.type)) {
       alert("Cette opération a modifié des volumes : elle ne peut pas être supprimée sans casser la traçabilité. Enregistre une opération inverse à la place.");
       return;
     }
-    if (!window.confirm('Supprimer cette ligne du suivi ?')) return;    setLots((prev) => ({
+    if (!window.confirm('Supprimer cette ligne du suivi ?')) return;
+    setLots((prev) => ({
       ...prev,
       [lotId]: { ...prev[lotId], operations: prev[lotId].operations.filter((o) => o.id !== opId) },
     }));
@@ -3262,7 +3287,7 @@ export default function CahierDeChai() {
                                     mise: 'Mise', phase: 'Phase' }[o.type] || o.type
                                 }</span>
                                 {o.contenantId && <span className="muted small">{nomContenant(o.contenantId)}</span>}
-                                {['analyse', 'travail', 'manipulation', 'controle'].includes(o.type) && (
+                                {['analyse', 'travail', 'manipulation', 'controle', 'perte'].includes(o.type) && (
                                   <button className="btn btn-ghost btn-sm supprimer-op" onClick={() => supprimerOperation(lot.id, o.id)}>✕</button>
                                 )}
                               </div>
@@ -3710,7 +3735,7 @@ export default function CahierDeChai() {
                       <button className="btn btn-primary btn-sm" onClick={() => ouvrir('transfert', { lotId: lot.id })}>+ Transfert</button>
                     </div>
                     <table className="data-table compact">
-                      <thead><tr><th>Date</th><th>Type</th><th>Source</th><th>Destination</th><th>Volume</th><th>Lot lié</th></tr></thead>
+                      <thead><tr><th>Date</th><th>Type</th><th>Source</th><th>Destination</th><th>Volume</th><th>Lot lié</th><th></th></tr></thead>
                       <tbody>
                         {[...(lot.operations || [])]
                           .filter((o) => ['apport', 'transfert', 'reception', 'origine', 'deplacement', 'perte', 'mise'].includes(o.type))
@@ -3725,6 +3750,11 @@ export default function CahierDeChai() {
                                 {['transfert', 'perte', 'mise'].includes(o.type) ? '−' : '+'}{o.volume} hL
                               </td>
                               <td className="small">{o.lotAutreCode || '—'}</td>
+                              <td>
+                                {o.type === 'perte' && (
+                                  <button className="btn btn-ghost btn-sm" onClick={() => supprimerOperation(lot.id, o.id)}>✕</button>
+                                )}
+                              </td>
                             </tr>
                           ))}
                       </tbody>
