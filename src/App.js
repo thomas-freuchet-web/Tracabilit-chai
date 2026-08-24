@@ -1484,15 +1484,24 @@ function ModaleImportIA({ onImporter, onFermer }) {
       });
       if (error) {
         // supabase-js masque le vrai message derrière "non-2xx status code" :
-        // on va chercher le détail dans le corps de la réponse d'erreur.
+        // on va chercher le détail dans le corps de la réponse d'erreur. Deux
+        // formats possibles : { error: "..." } (notre fonction) ou
+        // { message: "..." } (rejet par la passerelle Supabase, ex. session
+        // expirée avant même d'atteindre notre code).
         let detail = error.message;
-        if (error.context && typeof error.context.json === 'function') {
-          try {
-            const corps = await error.context.json();
-            if (corps && corps.error) detail = corps.error;
-          } catch { /* corps non-JSON, on garde le message générique */ }
+        let statut = null;
+        if (error.context) {
+          statut = error.context.status;
+          if (typeof error.context.json === 'function') {
+            try {
+              const corps = await error.context.json();
+              if (corps && (corps.error || corps.message)) detail = corps.error || corps.message;
+            } catch { /* corps non-JSON, on garde le message générique */ }
+          }
         }
-        throw new Error(detail);
+        // eslint-disable-next-line no-console
+        console.error('Erreur import IA :', { statut, detail, error });
+        throw new Error(statut ? `${detail} (HTTP ${statut})` : detail);
       }
       if (data && data.error) throw new Error(data.error);
       setResultat(data);
