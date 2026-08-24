@@ -214,15 +214,11 @@ function couleurLot(lot, parcelles, cepages) {
   return [...set][0];
 }
 
+/* --- Libellé d'assemblage : par cépage (c'est ce qui a un sens pour un
+       assemblage), pas par parcelle --- */
 function libelleComposition(lot, parcelles, cepages) {
-  return (lot.composition || [])
-    .map((c) => {
-      const p = parcelles[c.parcelleId];
-      if (!p) return null;
-      const cep = cepages[p.cepageId];
-      return `${round2(c.pct)} % ${cep ? cep.nom : '?'} (${p.nom})`;
-    })
-    .filter(Boolean)
+  return compositionParCepage(lot, parcelles, cepages)
+    .map((c) => `${c.pct} % ${c.nom}`)
     .join(' · ');
 }
 
@@ -232,11 +228,13 @@ function compositionParCepage(lot, parcelles, cepages) {
   (lot.composition || []).forEach((c) => {
     const p = parcelles[c.parcelleId];
     if (!p) return;
-    const nom = cepages[p.cepageId] ? cepages[p.cepageId].nom : 'Inconnu';
-    map[nom] = (map[nom] || 0) + c.pct;
+    const cep = cepages[p.cepageId];
+    const cle = cep ? cep.id : '?';
+    if (!map[cle]) map[cle] = { nom: cep ? cep.nom : 'Inconnu', couleur: cep ? cep.couleur : null, pct: 0 };
+    map[cle].pct += c.pct;
   });
-  return Object.keys(map)
-    .map((nom) => ({ nom, pct: round2(map[nom]) }))
+  return Object.values(map)
+    .map((x) => ({ ...x, pct: round2(x.pct) }))
     .sort((a, b) => b.pct - a.pct);
 }
 
@@ -1241,11 +1239,32 @@ function ModaleMise({ lot, contenants, conditionnements, parcelles, cepages, onV
   );
 }
 
-function ModaleEditLot({ lot, onValider, onFermer }) {
+function ModaleEditLot({ lot, contenants, onValider, onFermer }) {
   const [f, setF] = useState({
     code: lot.code, nom: lot.nom || '', millesime: lot.millesime, appellation: lot.appellation || '',
+    volumes: (lot.contenants || []).map((c) => ({ contenantId: c.contenantId, volume: String(c.volume) })),
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const setVolume = (contenantId, v) => setF((p) => ({
+    ...p, volumes: p.volumes.map((x) => (x.contenantId === contenantId ? { ...x, volume: v } : x)),
+  }));
+
+  const valider = () => {
+    if (f.volumes.some((v) => v.volume === '' || Number(v.volume) < 0 || isNaN(Number(v.volume)))) {
+      alert('Volumes invalides'); return;
+    }
+    onValider({
+      code: f.code, nom: f.nom, millesime: Number(f.millesime), appellation: f.appellation,
+      contenants: lot.contenants
+        .map((c) => {
+          const v = f.volumes.find((x) => x.contenantId === c.contenantId);
+          return { ...c, volume: round2(Number(v.volume)) };
+        })
+        .filter((c) => c.volume > 0.001),
+    });
+    onFermer();
+  };
+
   return (
     <Modal title="Modifier le lot" subtitle="La composition parcellaire se recalcule automatiquement : elle n'est pas modifiable à la main." onClose={onFermer}>
       <div className="field-grid">
@@ -1254,8 +1273,23 @@ function ModaleEditLot({ lot, onValider, onFermer }) {
       </div>
       <Field label="Nom / cuvée"><input type="text" value={f.nom} onChange={(e) => set('nom', e.target.value)} /></Field>
       <Field label="Appellation"><input type="text" value={f.appellation} onChange={(e) => set('appellation', e.target.value)} /></Field>
+
+      {f.volumes.length > 0 && (
+        <div className="panel-inset">
+          <h4>Volume par contenant</h4>
+          <div className="field-grid">
+            {f.volumes.map((v) => (
+              <Field key={v.contenantId} label={contenants[v.contenantId] ? contenants[v.contenantId].nom : '?'}>
+                <input type="number" step="0.01" value={v.volume} onChange={(e) => setVolume(v.contenantId, e.target.value)} />
+              </Field>
+            ))}
+          </div>
+          <p className="field-hint">À corriger uniquement en cas d'erreur de saisie à l'apport — un vrai mouvement de volume doit passer par Transfert ou Sortie de volume, pour rester traçable.</p>
+        </div>
+      )}
+
       <div className="form-actions">
-        <button className="btn btn-primary" onClick={() => { onValider({ ...f, millesime: Number(f.millesime) }); onFermer(); }}>Enregistrer</button>
+        <button className="btn btn-primary" onClick={valider}>Enregistrer</button>
         <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
       </div>
     </Modal>
@@ -2894,7 +2928,7 @@ export default function CahierDeChai() {
         return <ModaleMise lot={lots[payload.lotId]} contenants={contenants} conditionnements={conditionnements}
           parcelles={parcelles} cepages={cepages} onValider={mettreEnBouteille} onFermer={fermer} />;
       case 'editLot':
-        return <ModaleEditLot lot={lots[payload.lotId]} onValider={(f) => majLot(payload.lotId, f)} onFermer={fermer} />;
+        return <ModaleEditLot lot={lots[payload.lotId]} contenants={contenants} onValider={(f) => majLot(payload.lotId, f)} onFermer={fermer} />;
       case 'lieu':
         return <ModaleLieu onValider={ajouterLieu} onFermer={fermer} />;
       case 'contenants':
@@ -3606,45 +3640,53 @@ export default function CahierDeChai() {
                   <>
                     <div className="panel">
                       <div className="panel-head">
-                        <h3 className="panel-title">Composition parcellaire</h3>
+                        <h3 className="panel-title">Assemblage (par cépage)</h3>
                         <button className="btn btn-outline btn-sm" onClick={() => exporterTracabilite(lot.id)}>Exporter la fiche</button>
                       </div>
                       {(lot.composition || []).length === 0 ? <p className="muted">Aucune composition enregistrée.</p> : (
                         <>
                           <div className="barre-composition">
+                            {compositionParCepage(lot, parcelles, cepages).map((c) => (
+                              <div key={c.nom} className={`barre-seg seg-${c.couleur || 'mixte'}`}
+                                style={{ width: `${c.pct}%` }} title={`${c.nom} — ${c.pct} %`} />
+                            ))}
+                          </div>
+                          <table className="data-table compact">
+                            <thead><tr><th>Cépage</th><th>Part de l'assemblage</th><th>Volume</th></tr></thead>
+                            <tbody>
+                              {compositionParCepage(lot, parcelles, cepages).map((c) => (
+                                <tr key={c.nom}>
+                                  <td><ColorDot couleur={c.couleur} />{c.nom}</td>
+                                  <td><strong>{c.pct} %</strong></td>
+                                  <td>{round2((c.pct / 100) * volumeLot(lot))} hL</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </>
+                      )}
+                    </div>
+
+                    <div className="panel">
+                      <h3 className="panel-title">Détail par parcelle</h3>
+                      {(lot.composition || []).length === 0 ? <p className="muted">Aucune composition enregistrée.</p> : (
+                        <table className="data-table compact">
+                          <thead><tr><th>Parcelle</th><th>Cépage</th><th>Volume</th><th>Appellation</th></tr></thead>
+                          <tbody>
                             {(lot.composition || []).map((c) => {
                               const p = parcelles[c.parcelleId];
                               const cep = p ? cepages[p.cepageId] : null;
                               return (
-                                <div key={c.parcelleId} className={`barre-seg seg-${cep ? cep.couleur : 'mixte'}`}
-                                  style={{ width: `${c.pct}%` }} title={`${p ? p.nom : '?'} — ${round2(c.pct)} %`} />
+                                <tr key={c.parcelleId}>
+                                  <td><strong>{p ? p.nom : 'Parcelle supprimée'}</strong>{p && p.commune ? <div className="muted small">{p.commune}{p.cadastre ? ` · ${p.cadastre}` : ''}</div> : null}</td>
+                                  <td>{cep ? <><ColorDot couleur={cep.couleur} />{cep.nom}</> : '—'}</td>
+                                  <td>{round2((c.pct / 100) * volumeLot(lot))} hL</td>
+                                  <td className="small">{p ? p.appellation || '—' : '—'}</td>
+                                </tr>
                               );
                             })}
-                          </div>
-                          <table className="data-table compact">
-                            <thead><tr><th>Parcelle</th><th>Cépage</th><th>Part</th><th>Volume</th><th>Appellation</th></tr></thead>
-                            <tbody>
-                              {(lot.composition || []).map((c) => {
-                                const p = parcelles[c.parcelleId];
-                                const cep = p ? cepages[p.cepageId] : null;
-                                return (
-                                  <tr key={c.parcelleId}>
-                                    <td><strong>{p ? p.nom : 'Parcelle supprimée'}</strong>{p && p.commune ? <div className="muted small">{p.commune}{p.cadastre ? ` · ${p.cadastre}` : ''}</div> : null}</td>
-                                    <td>{cep ? <><ColorDot couleur={cep.couleur} />{cep.nom}</> : '—'}</td>
-                                    <td><strong>{round2(c.pct)} %</strong></td>
-                                    <td>{round2((c.pct / 100) * volumeLot(lot))} hL</td>
-                                    <td className="small">{p ? p.appellation || '—' : '—'}</td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                          <div className="repartition-cepage">
-                            {compositionParCepage(lot, parcelles, cepages).map((c) => (
-                              <span className="chip" key={c.nom}>{c.nom} <strong>{c.pct} %</strong></span>
-                            ))}
-                          </div>
-                        </>
+                          </tbody>
+                        </table>
                       )}
                     </div>
 
