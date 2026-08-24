@@ -1482,7 +1482,18 @@ function ModaleImportIA({ onImporter, onFermer }) {
       const { data, error } = await supabase.functions.invoke('extraire-referentiel', {
         body: { fichierBase64: base64, mimeType: fichier.type },
       });
-      if (error) throw error;
+      if (error) {
+        // supabase-js masque le vrai message derrière "non-2xx status code" :
+        // on va chercher le détail dans le corps de la réponse d'erreur.
+        let detail = error.message;
+        if (error.context && typeof error.context.json === 'function') {
+          try {
+            const corps = await error.context.json();
+            if (corps && corps.error) detail = corps.error;
+          } catch { /* corps non-JSON, on garde le message générique */ }
+        }
+        throw new Error(detail);
+      }
       if (data && data.error) throw new Error(data.error);
       setResultat(data);
       const sel = {};
