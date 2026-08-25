@@ -6,6 +6,7 @@
 // l'application peut appeler cette fonction (le dépôt est public, donc
 // n'importe qui pourrait sinon consommer le quota gratuit).
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { appelerGemini } from "../_shared/gemini.ts";
 
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
@@ -63,33 +64,13 @@ Deno.serve(async (req) => {
     const { fichierBase64, mimeType } = await req.json();
     if (!fichierBase64 || !mimeType) throw new Error("Fichier manquant");
 
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                { text: PROMPT },
-                { inline_data: { mime_type: mimeType, data: fichierBase64 } },
-              ],
-            },
-          ],
-          generationConfig: { responseMimeType: "application/json" },
-        }),
-      }
-    );
-
-    if (!geminiRes.ok) {
-      const detail = await geminiRes.text();
-      throw new Error(`Gemini a répondu ${geminiRes.status} : ${detail.slice(0, 300)}`);
+    const texte = await appelerGemini(GEMINI_API_KEY, MODEL, PROMPT, fichierBase64, mimeType);
+    let resultat;
+    try {
+      resultat = JSON.parse(texte);
+    } catch {
+      throw new Error("La réponse de l'IA n'était pas exploitable (document trop long ou illisible). Réessaie, ou envoie une photo plus nette.");
     }
-
-    const data = await geminiRes.json();
-    const texte = data?.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-    const resultat = JSON.parse(texte);
 
     return reponseJson(resultat);
   } catch (e) {
