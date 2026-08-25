@@ -1329,6 +1329,27 @@ function ModaleEditLot({ lot, contenants, onValider, onFermer }) {
   );
 }
 
+function ModaleEditApport({ op, contenants, parcelles, onValider, onFermer }) {
+  const [f, setF] = useState({
+    volume: String(op.volume), poidsKg: op.poidsKg !== null && op.poidsKg !== undefined ? String(op.poidsKg) : '',
+  });
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const parcelle = parcelles[op.parcelleId];
+  return (
+    <Modal title="Modifier l'apport" subtitle={`${op.date} — ${parcelle ? parcelle.nom : '?'} → ${contenants[op.contenantId] ? contenants[op.contenantId].nom : '?'}`} onClose={onFermer}>
+      <div className="field-grid">
+        <Field label="Volume mis en cuve (hL)"><input type="number" step="0.1" value={f.volume} onChange={(e) => set('volume', e.target.value)} /></Field>
+        <Field label="Poids de vendange (kg)" hint="Optionnel"><input type="number" step="1" value={f.poidsKg} onChange={(e) => set('poidsKg', e.target.value)} /></Field>
+      </div>
+      <p className="field-hint">Corrige une erreur de saisie sur cet apport précis — le volume en cuve et la composition du lot sont recalculés automatiquement.</p>
+      <div className="form-actions">
+        <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>Enregistrer</button>
+        <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
+      </div>
+    </Modal>
+  );
+}
+
 function ModaleLieu({ lieu, onValider, onFermer }) {
   const [f, setF] = useState(lieu
     ? { nom: lieu.nom, type: lieu.type, usage: lieu.usage }
@@ -2210,6 +2231,53 @@ export default function CahierDeChai() {
       },
     }));
     setLotOuvert(id);
+    return true;
+  };
+
+  /* --- Correction du volume (et poids) d'un apport précis, une fois inscrit.
+         Recalcule le volume en cuve et rejoue la composition à partir des
+         apports du lot (dans l'ordre où ils ont eu lieu) avec la valeur
+         corrigée. Ne fonctionne que si le lot n'a jamais reçu de vin d'un
+         autre lot par transfert : dans ce cas la composition au moment de la
+         réception n'est pas conservée et ne peut pas être rejouée fiablement. */
+  const majApport = (lotId, opId, form) => {
+    const v = Number(form.volume);
+    if (!v || v <= 0) { alert('Volume invalide'); return false; }
+    const lot = lots[lotId];
+    const op = (lot.operations || []).find((o) => o.id === opId);
+    if (!op) return false;
+
+    const aRecuDuVin = (lot.operations || []).some((o) => o.type === 'reception');
+    if (aRecuDuVin) {
+      alert("Ce lot a reçu du vin d'un autre lot par transfert : sa composition ne peut pas être recalculée de façon fiable après coup. Corrige plutôt l'écart avec un Transfert ou une Sortie de volume.");
+      return false;
+    }
+
+    const delta = round2(v - op.volume);
+    const ligneCible = (lot.contenants || []).find((c) => c.contenantId === op.contenantId) || (lot.contenants || [])[0];
+    if (!ligneCible) { alert("Ce lot ne contient plus de volume en cave : correction impossible."); return false; }
+    if (round2(ligneCible.volume + delta) < 0) { alert('Le volume ne peut pas devenir négatif dans ce contenant.'); return false; }
+
+    setLots((prev) => {
+      const l = { ...prev[lotId] };
+      l.operations = l.operations.map((o) => (o.id === opId
+        ? { ...o, volume: v, poidsKg: form.poidsKg ? Number(form.poidsKg) : null }
+        : o));
+
+      let composition = [];
+      let volumeCumule = 0;
+      l.operations.filter((o) => o.type === 'apport').forEach((o) => {
+        composition = melangerCompositions(composition, volumeCumule, [{ parcelleId: o.parcelleId, pct: 100 }], o.volume);
+        volumeCumule = round2(volumeCumule + o.volume);
+      });
+      l.composition = composition;
+
+      l.contenants = l.contenants
+        .map((c) => (c.contenantId === ligneCible.contenantId ? { ...c, volume: round2(c.volume + delta) } : c))
+        .filter((c) => c.volume > 0.001);
+
+      return { ...prev, [lotId]: l };
+    });
     return true;
   };
 
@@ -3464,6 +3532,9 @@ export default function CahierDeChai() {
           parcelles={parcelles} cepages={cepages} onValider={mettreEnBouteille} onFermer={fermer} />;
       case 'editLot':
         return <ModaleEditLot lot={lots[payload.lotId]} contenants={contenants} onValider={(f) => majLot(payload.lotId, f)} onFermer={fermer} />;
+      case 'editApport':
+        return <ModaleEditApport op={(lots[payload.lotId].operations || []).find((o) => o.id === payload.opId)}
+          contenants={contenants} parcelles={parcelles} onValider={(f) => majApport(payload.lotId, payload.opId, f)} onFermer={fermer} />;
       case 'lieu':
         return <ModaleLieu lieu={payload.lieu} onValider={payload.lieu ? (f) => majLieu(payload.lieu.id, f) : ajouterLieu} onFermer={fermer} />;
       case 'contenants':
@@ -3867,6 +3938,9 @@ export default function CahierDeChai() {
                                     mise: 'Mise', phase: 'Phase' }[o.type] || o.type
                                 }</span>
                                 {o.contenantId && <span className="muted small">{nomContenant(o.contenantId)}</span>}
+                                {o.type === 'apport' && (
+                                  <button className="btn btn-ghost btn-sm" onClick={() => ouvrir('editApport', { lotId: lot.id, opId: o.id })}>Modifier</button>
+                                )}
                                 {['analyse', 'travail', 'manipulation', 'controle', 'perte'].includes(o.type) && (
                                   <button className="btn btn-ghost btn-sm supprimer-op" onClick={() => supprimerOperation(lot.id, o.id)}>✕</button>
                                 )}
