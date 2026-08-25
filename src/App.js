@@ -584,8 +584,12 @@ function ModaleTransfert({ lot, contenants, lieux, occupation, lots, parcelles, 
   );
 }
 
-function ModaleAjoutProduit({ lot, produits, contenants, onValider, onFermer }) {
-  const [f, setF] = useState({
+function ModaleAjoutProduit({ lot, produits, contenants, onValider, onFermer, ajout }) {
+  const [f, setF] = useState(ajout ? {
+    lotId: lot.id, produitId: ajout.produitId, quantite: String(ajout.quantite), date: ajout.date,
+    contenantId: ajout.contenantId, numeroLotFournisseur: ajout.numeroLotFournisseur || '',
+    dluo: ajout.dluo || '', notes: ajout.notes || '', manipType: ajout.manipType || '',
+  } : {
     lotId: lot.id, produitId: '', quantite: '', date: today(),
     contenantId: (lot.contenants[0] || {}).contenantId || '',
     numeroLotFournisseur: '', dluo: '', notes: '', manipType: '',
@@ -598,7 +602,7 @@ function ModaleAjoutProduit({ lot, produits, contenants, onValider, onFermer }) 
   const joursDluo = lotChoisi ? joursAvantDluo(lotChoisi.dluo) : null;
 
   return (
-    <Modal title="Ajout de produit œnologique" subtitle={`Lot ${lot.code} — le stock sera décrémenté automatiquement`} onClose={onFermer}>
+    <Modal title={ajout ? "Modifier l'ajout de produit" : 'Ajout de produit œnologique'} subtitle={`Lot ${lot.code} — le stock sera décrémenté automatiquement`} onClose={onFermer}>
       <div className="field-grid">
         <Field label="Date"><input type="date" value={f.date} onChange={(e) => set('date', e.target.value)} /></Field>
         <Field label="Contenant concerné">
@@ -612,8 +616,8 @@ function ModaleAjoutProduit({ lot, produits, contenants, onValider, onFermer }) 
         </Field>
       </div>
 
-      <Field label="Produit">
-        <select value={f.produitId} onChange={(e) => {
+      <Field label="Produit" hint={ajout ? "Le produit d'un ajout déjà enregistré ne peut pas être changé — supprime et recrée si tu t'es trompé de produit." : undefined}>
+        <select value={f.produitId} disabled={!!ajout} onChange={(e) => {
           const p = produits[e.target.value];
           const dispos = p ? stockParLotFournisseur(p).filter((l) => l.reste > 0) : [];
           setF((prev) => ({
@@ -635,14 +639,14 @@ function ModaleAjoutProduit({ lot, produits, contenants, onValider, onFermer }) 
           })}
         </select>
       </Field>
-      {prod && (
+      {prod && !ajout && (
         <p className={`inline-note ${dispo <= 0 ? 'warn' : ''}`}>
           Stock disponible : {dispo} {prod.unite}
           {prod.manipType ? ` · soumis au registre « ${MANIP_TYPES[prod.manipType].label} »` : ''}
         </p>
       )}
 
-      {prod && (
+      {prod && !ajout && (
         <Field label="Lot fournisseur utilisé" hint="Classés par DLUO la plus proche — utilise le plus ancien en premier">
           {lotsDispo.length === 0 ? (
             <p className="inline-note warn">Aucun lot en stock pour ce produit. Enregistre d'abord une entrée en stock.</p>
@@ -659,6 +663,12 @@ function ModaleAjoutProduit({ lot, produits, contenants, onValider, onFermer }) 
             </select>
           )}
         </Field>
+      )}
+      {ajout && (
+        <div className="field-grid">
+          <Field label="N° de lot fournisseur"><input type="text" value={f.numeroLotFournisseur} onChange={(e) => set('numeroLotFournisseur', e.target.value)} /></Field>
+          <Field label="DLUO"><input type="date" value={f.dluo} onChange={(e) => set('dluo', e.target.value)} /></Field>
+        </div>
       )}
       {lotChoisi && joursDluo !== null && joursDluo <= 60 && (
         <p className="inline-note warn">
@@ -687,7 +697,7 @@ function ModaleAjoutProduit({ lot, produits, contenants, onValider, onFermer }) 
       <Field label="Notes"><textarea value={f.notes} onChange={(e) => set('notes', e.target.value)} /></Field>
 
       <div className="form-actions">
-        <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>Enregistrer l'ajout</button>
+        <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>{ajout ? 'Enregistrer' : "Enregistrer l'ajout"}</button>
         <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
       </div>
     </Modal>
@@ -867,8 +877,13 @@ function EcranReleve({ lots, contenants, lieux, parcelles, cepages, onEnregistre
   );
 }
 
-function ModaleControle({ lot, contenants, onValider, onFermer }) {
-  const [f, setF] = useState({
+function ModaleControle({ lot, contenants, onValider, onFermer, controle }) {
+  const [f, setF] = useState(controle ? {
+    lotId: lot.id, date: controle.date, moment: controle.moment || 'matin',
+    contenantId: controle.contenantId, temperature: controle.temperature !== null && controle.temperature !== undefined ? String(controle.temperature) : '',
+    densite: controle.densite !== null && controle.densite !== undefined ? String(controle.densite) : '',
+    notes: controle.notes || '',
+  } : {
     lotId: lot.id, date: today(),
     moment: new Date().getHours() < 14 ? 'matin' : 'soir',
     contenantId: (lot.contenants[0] || {}).contenantId || '',
@@ -883,7 +898,7 @@ function ModaleControle({ lot, contenants, onValider, onFermer }) {
   const dernier = precedents[0];
 
   return (
-    <Modal title="Relevé température & densité" subtitle={`Lot ${lot.code}`} onClose={onFermer}>
+    <Modal title={controle ? 'Modifier le relevé' : 'Relevé température & densité'} subtitle={`Lot ${lot.code}`} onClose={onFermer}>
       <div className="field-grid">
         <Field label="Date"><input type="date" value={f.date} onChange={(e) => set('date', e.target.value)} /></Field>
         <Field label="Moment">
@@ -940,8 +955,13 @@ function ModaleControle({ lot, contenants, onValider, onFermer }) {
   );
 }
 
-function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer }) {
-  const [f, setF] = useState({
+function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer, analyse }) {
+  const [f, setF] = useState(analyse ? {
+    lotId: lot.id, date: analyse.date, heure: analyse.heure || nowTime(),
+    contenantId: analyse.contenantId, source: analyse.source || 'interne',
+    valeurs: Object.fromEntries(Object.entries(analyse.valeurs || {}).map(([k, v]) => [k, String(v)])),
+    notes: analyse.notes || '', bulletins: analyse.bulletins || [],
+  } : {
     lotId: lot.id, date: today(), heure: nowTime(),
     contenantId: (lot.contenants[0] || {}).contenantId || '',
     source: 'interne', valeurs: {}, notes: '', bulletins: [],
@@ -977,7 +997,7 @@ function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer }) {
   };
 
   return (
-    <Modal title="Analyse" subtitle={`Lot ${lot.code} — laisse vide ce que tu ne mesures pas`} onClose={onFermer} large>
+    <Modal title={analyse ? "Modifier l'analyse" : 'Analyse'} subtitle={`Lot ${lot.code} — laisse vide ce que tu ne mesures pas`} onClose={onFermer} large>
       <div className="field-grid">
         <Field label="Date"><input type="date" value={f.date} onChange={(e) => set('date', e.target.value)} /></Field>
         <Field label="Heure"><input type="time" value={f.heure} onChange={(e) => set('heure', e.target.value)} /></Field>
@@ -1026,21 +1046,24 @@ function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer }) {
 
       <Field label="Notes / dégustation"><textarea value={f.notes} onChange={(e) => set('notes', e.target.value)} /></Field>
       <div className="form-actions">
-        <button className="btn btn-primary" disabled={chargement} onClick={() => { if (onValider(f)) onFermer(); }}>Enregistrer l'analyse</button>
+        <button className="btn btn-primary" disabled={chargement} onClick={() => { if (onValider(f)) onFermer(); }}>{analyse ? 'Enregistrer' : "Enregistrer l'analyse"}</button>
         <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
       </div>
     </Modal>
   );
 }
 
-function ModaleTravail({ lot, contenants, onValider, onFermer }) {
-  const [f, setF] = useState({
+function ModaleTravail({ lot, contenants, onValider, onFermer, travail }) {
+  const [f, setF] = useState(travail ? {
+    lotId: lot.id, date: travail.date, heure: travail.heure || nowTime(), action: travail.action,
+    contenantId: travail.contenantId, duree: travail.duree || '', notes: travail.notes || '',
+  } : {
     lotId: lot.id, date: today(), heure: nowTime(), action: '',
     contenantId: (lot.contenants[0] || {}).contenantId || '', duree: '', notes: '',
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   return (
-    <Modal title="Travail de cave" subtitle={`Lot ${lot.code}`} onClose={onFermer}>
+    <Modal title={travail ? 'Modifier le travail de cave' : 'Travail de cave'} subtitle={`Lot ${lot.code}`} onClose={onFermer}>
       <div className="field-grid">
         <Field label="Date"><input type="date" value={f.date} onChange={(e) => set('date', e.target.value)} /></Field>
         <Field label="Heure"><input type="time" value={f.heure} onChange={(e) => set('heure', e.target.value)} /></Field>
@@ -1072,21 +1095,25 @@ function ModaleTravail({ lot, contenants, onValider, onFermer }) {
   );
 }
 
-function ModalePerte({ lot, contenants, onValider, onFermer }) {
-  const [f, setF] = useState({
+function ModalePerte({ lot, contenants, onValider, onFermer, perte }) {
+  const [f, setF] = useState(perte ? {
+    lotId: lot.id, date: perte.date, volume: String(perte.volume),
+    poidsKg: perte.poidsKg !== null && perte.poidsKg !== undefined ? String(perte.poidsKg) : '',
+    contenantId: perte.contenantId, motif: perte.motif || '', notes: perte.notes || '',
+  } : {
     lotId: lot.id, date: today(), volume: '', poidsKg: '',
-    contenantId: (lot.contenants[0] || {}).contenantId || '', motif: '',
+    contenantId: (lot.contenants[0] || {}).contenantId || '', motif: '', notes: '',
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const motifPoubelle = MOTIFS_POUBELLE.includes(f.motif);
   return (
-    <Modal title="Sortie de volume" subtitle={`Lot ${lot.code} — perte, lies, échantillon, dégustation…`} onClose={onFermer}>
+    <Modal title={perte ? 'Modifier la sortie de volume' : 'Sortie de volume'} subtitle={`Lot ${lot.code} — perte, lies, échantillon, dégustation…`} onClose={onFermer}>
       <div className="field-grid">
         <Field label="Date"><input type="date" value={f.date} onChange={(e) => set('date', e.target.value)} /></Field>
         <Field label="Volume (hL)"><input type="number" step="0.01" value={f.volume} onChange={(e) => set('volume', e.target.value)} /></Field>
       </div>
       <Field label="Contenant">
-        <select value={f.contenantId} onChange={(e) => set('contenantId', e.target.value)}>
+        <select value={f.contenantId} onChange={(e) => set('contenantId', e.target.value)} disabled={!!perte}>
           {lot.contenants.map((c) => (
             <option key={c.contenantId} value={c.contenantId}>
               {contenants[c.contenantId] ? contenants[c.contenantId].nom : '?'} ({c.volume} hL)
@@ -1105,6 +1132,7 @@ function ModalePerte({ lot, contenants, onValider, onFermer }) {
           <input type="number" step="1" value={f.poidsKg} onChange={(e) => set('poidsKg', e.target.value)} />
         </Field>
       )}
+      <Field label="Observations" hint="Optionnel"><textarea value={f.notes} onChange={(e) => set('notes', e.target.value)} /></Field>
       <div className="form-actions">
         <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>Enregistrer</button>
         <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
@@ -1353,6 +1381,34 @@ function ModaleEditApport({ op, contenants, parcelles, onValider, onFermer }) {
       </div>
       <Field label="Poids de vendange (kg)" hint="Optionnel"><input type="number" step="1" value={f.poidsKg} onChange={(e) => set('poidsKg', e.target.value)} /></Field>
       <p className="field-hint">Corrige une erreur de saisie sur cet apport précis — le volume en cuve et la composition du lot sont recalculés automatiquement.</p>
+      <div className="form-actions">
+        <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>Enregistrer</button>
+        <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
+      </div>
+    </Modal>
+  );
+}
+
+const LIBELLES_MOUVEMENT = { transfert: 'Transfert', reception: 'Réception', origine: 'Origine', deplacement: 'Déplacement' };
+
+/* Édition légère d'un transfert/réception/déplacement : seuls le motif et
+   la note sont modifiables. Le volume et les contenants ne le sont pas —
+   ils ont mis à jour DEUX lots symétriquement (le lot source et le lot
+   destination), les corriger après coup romprait leur cohérence croisée ;
+   pour un vrai écart de volume, un nouveau Transfert ou une Sortie de
+   volume reste la voie sûre. */
+function ModaleEditMouvement({ op, contenants, onValider, onFermer }) {
+  const [f, setF] = useState({ motif: op.motif || '', note: op.note || op.notes || '' });
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const nom = (id) => (contenants[id] ? contenants[id].nom : '?');
+  return (
+    <Modal title={`Modifier — ${LIBELLES_MOUVEMENT[op.type] || op.type}`}
+      subtitle={`${op.date} — ${op.volume} hL · ${nom(op.contenantSourceId)} → ${nom(op.contenantDestId)}`}
+      onClose={onFermer}>
+      <Field label="Nature de l'opération"><input type="text" value={f.motif} onChange={(e) => set('motif', e.target.value)} /></Field>
+      <Field label="Note" hint="Le volume et les contenants ne sont pas modifiables ici : ils ont mis à jour deux lots en même temps. Utilise Transfert ou Sortie de volume pour corriger un écart de volume.">
+        <textarea value={f.note} onChange={(e) => set('note', e.target.value)} />
+      </Field>
       <div className="form-actions">
         <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>Enregistrer</button>
         <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
@@ -2442,6 +2498,20 @@ export default function CahierDeChai() {
     return true;
   };
 
+  /* Corrige le motif/la note d'un transfert, réception ou déplacement déjà
+     enregistré — le volume et les contenants restent figés (voir
+     ModaleEditMouvement). */
+  const majMouvement = (lotId, opId, form) => {
+    setLots((prev) => ({
+      ...prev,
+      [lotId]: {
+        ...prev[lotId],
+        operations: prev[lotId].operations.map((o) => (o.id === opId ? { ...o, motif: form.motif || '', notes: form.note || '' } : o)),
+      },
+    }));
+    return true;
+  };
+
   /* =========================================================================
      AJOUT DE PRODUIT ŒNOLOGIQUE — décrémente le stock
      ========================================================================= */
@@ -2481,6 +2551,50 @@ export default function CahierDeChai() {
     return true;
   };
 
+  /* Corrige un ajout de produit déjà enregistré (le produit lui-même n'est
+     pas modifiable — supprimer/recréer si c'est le mauvais produit). Le
+     mouvement de stock lié est ajusté en conséquence. */
+  const majAjoutProduit = (lotId, opId, form) => {
+    const q = Number(form.quantite);
+    if (!q || q <= 0) { alert('Quantité invalide'); return false; }
+    const lot = lots[lotId];
+    const op = (lot.operations || []).find((o) => o.id === opId);
+    if (!op) return false;
+    const prod = produits[op.produitId];
+    const dispoSansCetAjout = round2(stockProduit(prod) + op.quantite);
+    if (q > dispoSansCetAjout) {
+      if (!window.confirm(`Stock insuffisant (${dispoSansCetAjout} ${prod.unite} disponibles). Enregistrer quand même ?`)) return false;
+    }
+
+    setLots((prev) => ({
+      ...prev,
+      [lotId]: {
+        ...prev[lotId],
+        operations: prev[lotId].operations.map((o) => (o.id === opId ? {
+          ...o, date: form.date, quantite: q, contenantId: form.contenantId,
+          numeroLotFournisseur: form.numeroLotFournisseur || '', dluo: form.dluo || '',
+          manipType: form.manipType || null, notes: form.notes || '',
+        } : o)),
+      },
+    }));
+    if (op.mouvementId) {
+      setProduits((prev) => {
+        const p = prev[op.produitId];
+        if (!p) return prev;
+        return {
+          ...prev,
+          [op.produitId]: {
+            ...p,
+            mouvements: (p.mouvements || []).map((m) => (m.id === op.mouvementId
+              ? { ...m, date: form.date, quantite: q, numeroLotFournisseur: form.numeroLotFournisseur || '' }
+              : m)),
+          },
+        };
+      });
+    }
+    return true;
+  };
+
   /* =========================================================================
      ANALYSES, TRAVAUX, PERTES, MANIPULATIONS RÉGLEMENTAIRES
      ========================================================================= */
@@ -2494,6 +2608,22 @@ export default function CahierDeChai() {
       heure: nowTime(), contenantId: form.contenantId,
       temperature: t, densite: d, notes: form.notes || '', auteur: user.id,
     });
+    return true;
+  };
+
+  const majControle = (lotId, opId, form) => {
+    const t = form.temperature === '' || form.temperature === null || form.temperature === undefined ? null : Number(form.temperature);
+    const d = form.densite === '' || form.densite === null || form.densite === undefined ? null : Number(form.densite);
+    if (t === null && d === null) { alert('Saisis au moins une température ou une densité'); return false; }
+    setLots((prev) => ({
+      ...prev,
+      [lotId]: {
+        ...prev[lotId],
+        operations: prev[lotId].operations.map((o) => (o.id === opId
+          ? { ...o, date: form.date, moment: form.moment || 'matin', contenantId: form.contenantId, temperature: t, densite: d, notes: form.notes || '' }
+          : o)),
+      },
+    }));
     return true;
   };
 
@@ -2511,12 +2641,44 @@ export default function CahierDeChai() {
     return true;
   };
 
+  const majAnalyse = (lotId, opId, form) => {
+    const valeurs = {};
+    Object.keys(form.valeurs || {}).forEach((k) => {
+      if (form.valeurs[k] !== '' && form.valeurs[k] !== null) valeurs[k] = Number(form.valeurs[k]);
+    });
+    if (Object.keys(valeurs).length === 0) { alert('Saisis au moins une valeur'); return false; }
+    setLots((prev) => ({
+      ...prev,
+      [lotId]: {
+        ...prev[lotId],
+        operations: prev[lotId].operations.map((o) => (o.id === opId
+          ? { ...o, date: form.date, heure: form.heure, contenantId: form.contenantId, source: form.source || 'interne', valeurs, bulletins: form.bulletins || [], notes: form.notes || '' }
+          : o)),
+      },
+    }));
+    return true;
+  };
+
   const enregistrerTravail = (form) => {
     if (!form.action) { alert('Choisis une action'); return false; }
     ajouterOperation(form.lotId, {
       type: 'travail', date: form.date, heure: form.heure, action: form.action,
       contenantId: form.contenantId, duree: form.duree || '', notes: form.notes || '', auteur: user.id,
     });
+    return true;
+  };
+
+  const majTravail = (lotId, opId, form) => {
+    if (!form.action) { alert('Choisis une action'); return false; }
+    setLots((prev) => ({
+      ...prev,
+      [lotId]: {
+        ...prev[lotId],
+        operations: prev[lotId].operations.map((o) => (o.id === opId
+          ? { ...o, date: form.date, heure: form.heure, action: form.action, contenantId: form.contenantId, duree: form.duree || '', notes: form.notes || '' }
+          : o)),
+      },
+    }));
     return true;
   };
 
@@ -2534,10 +2696,41 @@ export default function CahierDeChai() {
       l.operations = [...(l.operations || []), {
         id: uid('op'), type: 'perte', date: form.date, volume: v,
         contenantId: form.contenantId, motif: form.motif || '',
-        poidsKg: form.poidsKg ? Number(form.poidsKg) : null, auteur: user.id,
+        poidsKg: form.poidsKg ? Number(form.poidsKg) : null, notes: form.notes || '', auteur: user.id,
       }];
       if (volumeLot(l) <= 0.001) l.statut = 'archive';
       return { ...prev, [form.lotId]: l };
+    });
+    return true;
+  };
+
+  /* Corrige une sortie de volume déjà inscrite (le contenant est fixe : on
+     ne déplace pas une sortie d'un contenant à l'autre). */
+  const majPerte = (lotId, opId, form) => {
+    const v = Number(form.volume);
+    if (!v || v <= 0) { alert('Volume invalide'); return false; }
+    const lot = lots[lotId];
+    const op = (lot.operations || []).find((o) => o.id === opId);
+    if (!op) return false;
+    const occ = occupationParContenant[op.contenantId];
+    if (occ && occ.lotId !== lotId) {
+      alert("Impossible de corriger cette sortie : le contenant est maintenant occupé par un autre lot.");
+      return false;
+    }
+    const delta = round2(v - op.volume);
+    const ligne = (lot.contenants || []).find((c) => c.contenantId === op.contenantId);
+    if (round2((ligne ? ligne.volume : 0) - delta) < 0) { alert('Volume insuffisant dans ce contenant pour cette correction.'); return false; }
+    setLots((prev) => {
+      const l = { ...prev[lotId] };
+      const dejaPresent = (l.contenants || []).some((c) => c.contenantId === op.contenantId);
+      l.contenants = dejaPresent
+        ? l.contenants.map((c) => (c.contenantId === op.contenantId ? { ...c, volume: round2(c.volume - delta) } : c)).filter((c) => c.volume > 0.001)
+        : [...(l.contenants || []), { contenantId: op.contenantId, volume: round2(-delta) }].filter((c) => c.volume > 0.001);
+      l.operations = l.operations.map((o) => (o.id === opId
+        ? { ...o, date: form.date, volume: v, motif: form.motif || '', poidsKg: form.poidsKg ? Number(form.poidsKg) : null, notes: form.notes || '' }
+        : o));
+      l.statut = volumeLot(l) > 0.001 ? 'actif' : 'archive';
+      return { ...prev, [lotId]: l };
     });
     return true;
   };
@@ -3668,16 +3861,20 @@ export default function CahierDeChai() {
           occupation={occupationParContenant} lots={lots} parcelles={parcelles} cepages={cepages}
           onValider={executerTransfert} onFermer={fermer} />;
       case 'ajoutProduit':
-        return <ModaleAjoutProduit lot={lots[payload.lotId]} produits={produits} contenants={contenants}
-          onValider={ajouterProduitAuLot} onFermer={fermer} />;
+        return <ModaleAjoutProduit lot={lots[payload.lotId]} produits={produits} contenants={contenants} ajout={payload.ajout}
+          onValider={payload.ajout ? (f) => majAjoutProduit(payload.lotId, payload.ajout.id, f) : ajouterProduitAuLot} onFermer={fermer} />;
       case 'analyse':
-        return <ModaleAnalyse lot={lots[payload.lotId]} contenants={contenants} userId={user.uid} onValider={enregistrerAnalyse} onFermer={fermer} />;
+        return <ModaleAnalyse lot={lots[payload.lotId]} contenants={contenants} userId={user.uid} analyse={payload.analyse}
+          onValider={payload.analyse ? (f) => majAnalyse(payload.lotId, payload.analyse.id, f) : enregistrerAnalyse} onFermer={fermer} />;
       case 'controle':
-        return <ModaleControle lot={lots[payload.lotId]} contenants={contenants} onValider={enregistrerControle} onFermer={fermer} />;
+        return <ModaleControle lot={lots[payload.lotId]} contenants={contenants} controle={payload.controle}
+          onValider={payload.controle ? (f) => majControle(payload.lotId, payload.controle.id, f) : enregistrerControle} onFermer={fermer} />;
       case 'travail':
-        return <ModaleTravail lot={lots[payload.lotId]} contenants={contenants} onValider={enregistrerTravail} onFermer={fermer} />;
+        return <ModaleTravail lot={lots[payload.lotId]} contenants={contenants} travail={payload.travail}
+          onValider={payload.travail ? (f) => majTravail(payload.lotId, payload.travail.id, f) : enregistrerTravail} onFermer={fermer} />;
       case 'perte':
-        return <ModalePerte lot={lots[payload.lotId]} contenants={contenants} onValider={enregistrerPerte} onFermer={fermer} />;
+        return <ModalePerte lot={lots[payload.lotId]} contenants={contenants} perte={payload.perte}
+          onValider={payload.perte ? (f) => majPerte(payload.lotId, payload.perte.id, f) : enregistrerPerte} onFermer={fermer} />;
       case 'manipulation':
         return <ModaleManipulation lot={lots[payload.lotId]} contenants={contenants} typeInitial={payload.manipType}
           manipulation={payload.manipulation}
@@ -3691,6 +3888,9 @@ export default function CahierDeChai() {
       case 'editApport':
         return <ModaleEditApport op={(lots[payload.lotId].operations || []).find((o) => o.id === payload.opId)}
           contenants={contenants} parcelles={parcelles} onValider={(f) => majApport(payload.lotId, payload.opId, f)} onFermer={fermer} />;
+      case 'editMouvement':
+        return <ModaleEditMouvement op={payload.op} contenants={contenants}
+          onValider={(f) => majMouvement(payload.lotId, payload.op.id, f)} onFermer={fermer} />;
       case 'lieu':
         return <ModaleLieu lieu={payload.lieu} onValider={payload.lieu ? (f) => majLieu(payload.lieu.id, f) : ajouterLieu} onFermer={fermer} />;
       case 'contenants':
@@ -4102,6 +4302,24 @@ export default function CahierDeChai() {
                                 {o.type === 'manipulation' && (
                                   <button className="btn btn-ghost btn-sm" onClick={() => ouvrir('manipulation', { lotId: lot.id, manipulation: o })}>Modifier</button>
                                 )}
+                                {o.type === 'controle' && (
+                                  <button className="btn btn-ghost btn-sm" onClick={() => ouvrir('controle', { lotId: lot.id, controle: o })}>Modifier</button>
+                                )}
+                                {o.type === 'analyse' && (
+                                  <button className="btn btn-ghost btn-sm" onClick={() => ouvrir('analyse', { lotId: lot.id, analyse: o })}>Modifier</button>
+                                )}
+                                {o.type === 'travail' && (
+                                  <button className="btn btn-ghost btn-sm" onClick={() => ouvrir('travail', { lotId: lot.id, travail: o })}>Modifier</button>
+                                )}
+                                {o.type === 'perte' && (
+                                  <button className="btn btn-ghost btn-sm" onClick={() => ouvrir('perte', { lotId: lot.id, perte: o })}>Modifier</button>
+                                )}
+                                {o.type === 'ajout' && (
+                                  <button className="btn btn-ghost btn-sm" onClick={() => ouvrir('ajoutProduit', { lotId: lot.id, ajout: o })}>Modifier</button>
+                                )}
+                                {['transfert', 'reception', 'origine', 'deplacement'].includes(o.type) && (
+                                  <button className="btn btn-ghost btn-sm" onClick={() => ouvrir('editMouvement', { lotId: lot.id, op: o })}>Modifier</button>
+                                )}
                                 {['analyse', 'travail', 'manipulation', 'controle', 'perte', 'ajout', 'apport'].includes(o.type) && (
                                   <button className="btn btn-ghost btn-sm supprimer-op" onClick={() => supprimerOperation(lot.id, o.id)}>✕</button>
                                 )}
@@ -4130,7 +4348,7 @@ export default function CahierDeChai() {
                               {o.type === 'perte' && <div>{o.motif} — {o.volume} hL{o.poidsKg ? ` · ${o.poidsKg} kg` : ''}</div>}
                               {o.type === 'manipulation' && <div>{MANIP_TYPES[o.manipType].label}{o.produit ? ` — ${o.produit}` : ''}{o.quantiteProduit ? ` (${o.quantiteProduit})` : ''}</div>}
                               {o.type === 'mise' && <div>Lot {o.numeroLot} — {o.volume} hL</div>}
-                              {o.notes && <div className="timeline-note">{o.notes}</div>}
+                              {(o.notes || o.note) && <div className="timeline-note">{o.notes || o.note}</div>}
                               {o.auteur && <div className="muted small">saisi par {o.auteur}</div>}
                             </div>
                           </div>
