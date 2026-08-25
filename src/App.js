@@ -2700,7 +2700,40 @@ export default function CahierDeChai() {
       return;
     }
 
-    if (['transfert', 'reception', 'origine', 'deplacement', 'apport', 'mise'].includes(op.type)) {
+    // Un apport peut être supprimé : le volume qu'il a mis en cuve est retiré
+    // et la composition du lot est rejouée à partir des apports restants —
+    // même garde-fou que pour la correction (majApport) : impossible si le
+    // lot a par ailleurs reçu du vin d'un autre lot par transfert.
+    if (op.type === 'apport') {
+      const aRecuDuVin = (lot.operations || []).some((o) => o.type === 'reception');
+      if (aRecuDuVin) {
+        alert("Ce lot a reçu du vin d'un autre lot par transfert : sa composition ne peut pas être recalculée de façon fiable après coup. Utilise Transfert ou Sortie de volume pour corriger le volume, ou Supprimer pour retirer le lot entier.");
+        return;
+      }
+      if (!window.confirm(`Supprimer cet apport de ${op.volume} hL et recalculer la composition du lot ?`)) return;
+      setLots((prev) => {
+        const l = { ...prev[lotId] };
+        l.operations = l.operations.filter((o) => o.id !== opId);
+
+        let composition = [];
+        let volumeCumule = 0;
+        l.operations.filter((o) => o.type === 'apport').forEach((o) => {
+          composition = melangerCompositions(composition, volumeCumule, [{ parcelleId: o.parcelleId, pct: 100 }], o.volume);
+          volumeCumule = round2(volumeCumule + o.volume);
+        });
+        l.composition = composition;
+
+        l.contenants = l.contenants
+          .map((c) => (c.contenantId === op.contenantId ? { ...c, volume: round2(c.volume - op.volume) } : c))
+          .filter((c) => c.volume > 0.001);
+        if (volumeLot(l) <= 0.001) l.statut = 'archive';
+
+        return { ...prev, [lotId]: l };
+      });
+      return;
+    }
+
+    if (['transfert', 'reception', 'origine', 'deplacement', 'mise'].includes(op.type)) {
       alert("Cette opération a modifié des volumes : elle ne peut pas être supprimée sans casser la traçabilité. Enregistre une opération inverse à la place.");
       return;
     }
@@ -4069,7 +4102,7 @@ export default function CahierDeChai() {
                                 {o.type === 'manipulation' && (
                                   <button className="btn btn-ghost btn-sm" onClick={() => ouvrir('manipulation', { lotId: lot.id, manipulation: o })}>Modifier</button>
                                 )}
-                                {['analyse', 'travail', 'manipulation', 'controle', 'perte', 'ajout'].includes(o.type) && (
+                                {['analyse', 'travail', 'manipulation', 'controle', 'perte', 'ajout', 'apport'].includes(o.type) && (
                                   <button className="btn btn-ghost btn-sm supprimer-op" onClick={() => supprimerOperation(lot.id, o.id)}>✕</button>
                                 )}
                               </div>
@@ -4564,7 +4597,7 @@ export default function CahierDeChai() {
                     </div>
                     {manips.length === 0 ? <p className="muted">Aucune manipulation inscrite.</p> : (
                       <table className="data-table compact">
-                        <thead><tr><th>Date</th><th>Type</th><th>Produit</th><th>Quantité</th><th>Volume</th><th>Lot</th><th></th></tr></thead>
+                        <thead><tr><th>Date</th><th>Type</th><th>Produit</th><th>Quantité</th><th>Volume</th><th>Lot</th><th></th><th></th></tr></thead>
                         <tbody>
                           {manips.map((o) => (
                             <tr key={o.id}>
@@ -4575,6 +4608,7 @@ export default function CahierDeChai() {
                               <td className="small">{o.volumeConcerne ? `${o.volumeConcerne} hL` : '—'}</td>
                               <td className="small">{o._lotCode}</td>
                               <td><button className="btn btn-ghost btn-sm" onClick={() => ouvrir('manipulation', { lotId: o._lotId, manipulation: o })}>Modifier</button></td>
+                              <td><button className="btn btn-ghost btn-sm" onClick={() => supprimerOperation(o._lotId, o.id)}>✕</button></td>
                             </tr>
                           ))}
                         </tbody>
@@ -4713,7 +4747,7 @@ export default function CahierDeChai() {
                   <h3 className="panel-title">Entrées de vendange ({apportsFiltres.length})</h3>
                   {apportsFiltres.length === 0 ? <p className="muted">Aucun apport.</p> : (
                     <table className="data-table compact">
-                      <thead><tr><th>Date</th><th>Lot</th><th>Parcelle</th><th>Cépage</th><th>Appellation</th><th>Contenant</th><th>Volume</th><th>Poids</th><th></th></tr></thead>
+                      <thead><tr><th>Date</th><th>Lot</th><th>Parcelle</th><th>Cépage</th><th>Appellation</th><th>Contenant</th><th>Volume</th><th>Poids</th><th></th><th></th></tr></thead>
                       <tbody>
                         {apportsFiltres.sort((a, b) => b.date.localeCompare(a.date)).map((o) => {
                           const p = parcelles[o.parcelleId];
@@ -4729,6 +4763,7 @@ export default function CahierDeChai() {
                               <td>{o.volume} hL</td>
                               <td className="small">{o.poidsKg ? `${o.poidsKg} kg` : '—'}</td>
                               <td><button className="btn btn-ghost btn-sm" onClick={() => ouvrir('editApport', { lotId: o._lot.id, opId: o.id })}>Modifier</button></td>
+                              <td><button className="btn btn-ghost btn-sm" onClick={() => supprimerOperation(o._lot.id, o.id)}>✕</button></td>
                             </tr>
                           );
                         })}
@@ -4745,7 +4780,7 @@ export default function CahierDeChai() {
                       <h3 className="panel-title">{MANIP_TYPES[type].label} ({liste.length})</h3>
                       <p className="delai-hint">⏱ {MANIP_TYPES[type].delai}</p>
                       <table className="data-table compact">
-                        <thead><tr><th>Date</th><th>Lot</th><th>Contenant</th><th>Produit</th><th>Quantité</th><th>Volume</th><th>Détail</th><th></th></tr></thead>
+                        <thead><tr><th>Date</th><th>Lot</th><th>Contenant</th><th>Produit</th><th>Quantité</th><th>Volume</th><th>Détail</th><th></th><th></th></tr></thead>
                         <tbody>
                           {liste.sort((a, b) => b.date.localeCompare(a.date)).map((o) => (
                             <tr key={o.id}>
@@ -4761,6 +4796,7 @@ export default function CahierDeChai() {
                                 {o.responsable ? `${o.responsable}` : ''}
                               </td>
                               <td><button className="btn btn-ghost btn-sm" onClick={() => ouvrir('manipulation', { lotId: o._lot.id, manipulation: o })}>Modifier</button></td>
+                              <td><button className="btn btn-ghost btn-sm" onClick={() => supprimerOperation(o._lot.id, o.id)}>✕</button></td>
                             </tr>
                           ))}
                         </tbody>
