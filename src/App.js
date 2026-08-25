@@ -1538,6 +1538,41 @@ function ModaleParcelles({ cepages, onValider, onFermer }) {
   );
 }
 
+function ModaleEditParcelle({ parcelle, cepages, onValider, onFermer }) {
+  const [f, setF] = useState({
+    nom: parcelle.nom, cepageId: parcelle.cepageId, surface: String(parcelle.surface || ''),
+    appellation: parcelle.appellation || '', anneePlantation: parcelle.anneePlantation || '',
+    commune: parcelle.commune || '', cadastre: parcelle.cadastre || '',
+  });
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  return (
+    <Modal title="Modifier la parcelle" onClose={onFermer}>
+      <Field label="Nom"><input type="text" value={f.nom} onChange={(e) => set('nom', e.target.value)} /></Field>
+      <Field label="Cépage">
+        <select value={f.cepageId} onChange={(e) => set('cepageId', e.target.value)}>
+          <option value="">— Sélectionner —</option>
+          {Object.values(cepages).map((c) => <option key={c.id} value={c.id}>{c.nom} ({COULEURS[c.couleur]})</option>)}
+        </select>
+      </Field>
+      <div className="field-grid">
+        <Field label="Surface (ha)"><input type="number" step="0.01" value={f.surface} onChange={(e) => set('surface', e.target.value)} /></Field>
+        <Field label="Année de plantation"><input type="text" value={f.anneePlantation} onChange={(e) => set('anneePlantation', e.target.value)} /></Field>
+      </div>
+      <div className="field-grid">
+        <Field label="Appellation revendicable"><input type="text" value={f.appellation} onChange={(e) => set('appellation', e.target.value)} /></Field>
+        <Field label="Commune"><input type="text" value={f.commune} onChange={(e) => set('commune', e.target.value)} /></Field>
+      </div>
+      <Field label="Références cadastrales / lieu-dit" hint="Repris dans le registre d'entrées de vendange">
+        <input type="text" value={f.cadastre} onChange={(e) => set('cadastre', e.target.value)} />
+      </Field>
+      <div className="form-actions">
+        <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>Enregistrer</button>
+        <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
+      </div>
+    </Modal>
+  );
+}
+
 const LABELS_IA = { lieux: 'Lieux', contenants: 'Contenants', cepages: 'Cépages', parcelles: 'Parcelles' };
 const CATEGORIES_PAR_SCOPE = { lieux: ['lieux', 'contenants'], cepages: ['cepages', 'parcelles'] };
 const SOUS_TITRES_IA = {
@@ -2773,6 +2808,22 @@ export default function CahierDeChai() {
     setParcelles((p) => ({ ...p, ...nouveaux }));
     return true;
   };
+  const majParcelle = (id, f) => {
+    if (!f.nom) { alert('Nom obligatoire'); return false; }
+    if (!f.cepageId) { alert('Choisis un cépage'); return false; }
+    if (Object.values(parcelles).some((p) => p.id !== id && p.nom.toLowerCase() === f.nom.toLowerCase())) {
+      alert('Une parcelle porte déjà ce nom'); return false;
+    }
+    setParcelles((p) => ({
+      ...p,
+      [id]: {
+        ...p[id], nom: f.nom, cepageId: f.cepageId, surface: Number(f.surface) || 0,
+        appellation: f.appellation || '', anneePlantation: f.anneePlantation || '',
+        commune: f.commune || '', cadastre: f.cadastre || '',
+      },
+    }));
+    return true;
+  };
   const supprimerParcelle = (id) => {
     const utilisee = Object.values(lots).some((l) => (l.composition || []).some((c) => c.parcelleId === id));
     if (utilisee) { alert('Cette parcelle est référencée dans la traçabilité d\'un lot.'); return; }
@@ -3455,7 +3506,10 @@ export default function CahierDeChai() {
                           </div>
                           <div className="chips-wrap">
                             {liste.map((p) => (
-                              <span className="chip" key={p.id}>{p.nom}<button onClick={() => supprimerParcelle(p.id)}>✕</button></span>
+                              <span className="chip" key={p.id} style={{ cursor: 'pointer' }} onClick={() => ouvrir('editParcelle', { parcelle: p })} title="Modifier">
+                                {p.nom}
+                                <button onClick={(e) => { e.stopPropagation(); supprimerParcelle(p.id); }}>✕</button>
+                              </span>
                             ))}
                           </div>
                         </div>
@@ -3545,6 +3599,8 @@ export default function CahierDeChai() {
         return <ModaleCepage cepage={payload.cepage} onValider={payload.cepage ? (f) => majCepage(payload.cepage.id, f) : ajouterCepage} onFermer={fermer} />;
       case 'parcelles':
         return <ModaleParcelles cepages={cepages} onValider={ajouterParcelles} onFermer={fermer} />;
+      case 'editParcelle':
+        return <ModaleEditParcelle parcelle={payload.parcelle} cepages={cepages} onValider={(f) => majParcelle(payload.parcelle.id, f)} onFermer={fermer} />;
       case 'importIA':
         return <ModaleImportIA scope={payload.scope} onImporter={importerReferentielIA} onFermer={fermer} />;
       case 'produit':
@@ -4799,9 +4855,9 @@ export default function CahierDeChai() {
                       </div>
                       <div className="chips-wrap">
                         {liste.sort((a, b) => a.nom.localeCompare(b.nom, undefined, { numeric: true })).map((p) => (
-                          <span className="chip" key={p.id}>
+                          <span className="chip" key={p.id} style={{ cursor: 'pointer' }} onClick={() => ouvrir('editParcelle', { parcelle: p })} title="Modifier">
                             {p.nom}{p.surface ? ` · ${p.surface} ha` : ''}
-                            <button onClick={() => supprimerParcelle(p.id)}>✕</button>
+                            <button onClick={(e) => { e.stopPropagation(); supprimerParcelle(p.id); }}>✕</button>
                           </span>
                         ))}
                         {liste.length === 0 && <span className="muted small">Aucune parcelle</span>}
