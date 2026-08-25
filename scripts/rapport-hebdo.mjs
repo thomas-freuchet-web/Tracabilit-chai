@@ -1,8 +1,11 @@
 // Récap hebdomadaire des cuves en vinification (température, densité, produits
-// ajoutés), généré en PDF et envoyé par email. Lancé chaque semaine par
-// .github/workflows/rapport-hebdo.yml — jamais exécuté depuis le navigateur.
+// ajoutés), généré en PDF et envoyé par email, accompagné d'une sauvegarde
+// Excel complète du registre (indépendante de Supabase, en cas de besoin de
+// restauration). Lancé chaque semaine par .github/workflows/rapport-hebdo.yml
+// — jamais exécuté depuis le navigateur.
 import { createClient } from '@supabase/supabase-js';
 import PDFDocument from 'pdfkit';
+import * as XLSX from 'xlsx';
 import fs from 'fs';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -12,6 +15,104 @@ const REPORT_EMAIL_TO = process.env.REPORT_EMAIL_TO;
 const REPORT_EMAIL_FROM = process.env.REPORT_EMAIL_FROM || 'Cahier de Chai <onboarding@resend.dev>';
 
 const PDF_PATH = '/tmp/recap-vinification.pdf';
+const XLSX_PATH = '/tmp/cahier-de-chai-sauvegarde.xlsx';
+
+const MANIP_LABELS = {
+  enrichissement: 'Enrichissement', acidification: 'Acidification', desacidification: 'Désacidification',
+  bois_chene: 'Bois de chêne', autres_produits: 'Autres produits', ferrocyanure: 'Ferrocyanure',
+  coupage: 'Coupage 85-15',
+};
+
+/* Sauvegarde Excel complète du registre — hors Supabase, en pièce jointe de
+   l'email hebdomadaire. Version simplifiée de l'export "Exporter tout en
+   Excel" de l'application (un seul onglet Manipulations au lieu d'un onglet
+   par type). */
+function genererExcel({ domaine = {}, lieux = {}, contenants = {}, cepages = {}, parcelles = {}, produits = {}, lots = {}, conditionnements = [] }) {
+  const wb = XLSX.utils.book_new();
+  const nomContenant = (id) => (contenants[id] ? contenants[id].nom : '—');
+
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+    ['SAUVEGARDE HEBDOMADAIRE — CAHIER DE CHAI'],
+    [domaine.nom || ''],
+    [], ['N° CVI / EVV', domaine.cvi || ''], ['Exploitant', domaine.exploitant || ''],
+    [], ['Éditée le', new Date().toISOString().slice(0, 10)],
+  ]), 'Exploitation');
+
+  const etat = [];
+  Object.values(lots).filter((l) => l.statut !== 'archive').forEach((l) => {
+    (l.contenants || []).forEach((c) => {
+      etat.push({
+        'Lot': l.code, 'Millésime': l.millesime, 'Appellation': l.appellation || '',
+        'Phase': l.phase, 'Contenant': nomContenant(c.contenantId), 'Volume (hL)': c.volume,
+      });
+    });
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(etat), 'État de cave');
+
+  const vendanges = [];
+  Object.values(lots).forEach((l) => {
+    (l.operations || []).filter((o) => o.type === 'apport').forEach((o) => {
+      const parc = parcelles[o.parcelleId];
+      const cep = parc ? cepages[parc.cepageId] : null;
+      vendanges.push({
+        'Date': o.date, 'Parcelle': parc ? parc.nom : '', 'Cépage': cep ? cep.nom : '',
+        'N° cuve': nomContenant(o.contenantId), 'Volume (hL)': o.volume, 'Lot': l.code,
+      });
+    });
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(vendanges), 'Entrées vendange');
+
+  const manips = [];
+  Object.values(lots).forEach((l) => {
+    (l.operations || []).filter((o) => o.type === 'manipulation').forEach((o) => {
+      manips.push({
+        'Date': o.date, 'Type': MANIP_LABELS[o.manipType] || o.manipType, 'Lot': l.code,
+        'Contenant': nomContenant(o.contenantId), 'Produit': o.produit || '', 'Quantité': o.quantiteProduit || '',
+        'Volume concerné (hL)': o.volumeConcerne || '', 'Observations': o.notes || '',
+      });
+    });
+  });
+  if (manips.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(manips), 'Manipulations');
+
+  const intrants = [];
+  Object.values(lots).forEach((l) => {
+    (l.operations || []).filter((o) => o.type === 'ajout').forEach((o) => {
+      intrants.push({
+        'Date': o.date, 'Lot': l.code, 'Contenant': nomContenant(o.contenantId), 'Produit': o.produitNom,
+        'Quantité': o.quantite, 'Unité': o.unite || '', 'N° lot fournisseur': o.numeroLotFournisseur || '', 'DLUO': o.dluo || '',
+      });
+    });
+  });
+  if (intrants.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(intrants), 'Intrants');
+
+  const stock = Object.values(produits).map((p) => ({
+    'Produit': p.nom, 'Catégorie': p.categorie, 'Unité': p.unite,
+    'Stock': (p.mouvements || []).reduce((s, m) => s + (m.sens === 'sortie' ? -m.quantite : m.quantite), 0),
+    'Fournisseur': p.fournisseur || '',
+  }));
+  if (stock.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(stock), 'Stock produits');
+
+  if (conditionnements.length) {
+    const cond = conditionnements.map((c) => ({
+      'Date': c.date, 'N° de lot': c.numeroLot, 'Lot vin': c.lotCode, 'Désignation': c.designation || '',
+      'Volume total (hL)': c.volumeHl,
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(cond), 'Conditionnement');
+  }
+
+  const releves = [];
+  Object.values(lots).forEach((l) => {
+    (l.operations || []).filter((o) => o.type === 'controle').forEach((o) => {
+      releves.push({
+        'Date': o.date, 'Moment': o.moment || '', 'Lot': l.code, 'Contenant': nomContenant(o.contenantId),
+        'Température (°C)': o.temperature ?? '', 'Densité': o.densite ?? '',
+      });
+    });
+  });
+  if (releves.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(releves), 'Relevés T° densité');
+
+  XLSX.writeFile(wb, XLSX_PATH);
+}
 
 function repartirLargeurs(doc, poids) {
   const total = doc.page.width - doc.page.margins.left - doc.page.margins.right;
@@ -162,6 +263,7 @@ function genererPDF({ lots, contenants, parcelles, cepages }) {
 
 async function envoyerEmail() {
   const pdfBuffer = fs.readFileSync(PDF_PATH);
+  const xlsxBuffer = fs.readFileSync(XLSX_PATH);
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
@@ -169,8 +271,11 @@ async function envoyerEmail() {
       from: REPORT_EMAIL_FROM,
       to: [REPORT_EMAIL_TO],
       subject: `Récap vinification — semaine du ${new Date().toLocaleDateString('fr-FR')}`,
-      text: 'Récap hebdomadaire des cuves en vinification (température, densité, produits ajoutés) en pièce jointe.',
-      attachments: [{ filename: 'recap-vinification.pdf', content: pdfBuffer.toString('base64') }],
+      text: "Récap hebdomadaire des cuves en vinification (température, densité, produits ajoutés) en pièce jointe, accompagné d'une sauvegarde Excel complète du registre.",
+      attachments: [
+        { filename: 'recap-vinification.pdf', content: pdfBuffer.toString('base64') },
+        { filename: `cahier-de-chai-sauvegarde-${new Date().toISOString().slice(0, 10)}.xlsx`, content: xlsxBuffer.toString('base64') },
+      ],
     }),
   });
   if (!res.ok) {
@@ -192,6 +297,7 @@ async function main() {
   }
 
   await genererPDF(row.data || {});
+  genererExcel(row.data || {});
   await envoyerEmail();
   console.log('Récap hebdomadaire envoyé avec succès.');
 }

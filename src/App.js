@@ -4,6 +4,8 @@ import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabaseClient';
 import { chargerEtat, sauvegarderEtat } from './lib/cloudStore';
 import { genererPdfCuve, telechargerBlob } from './lib/pdfRecap';
+import { genererPdfRegistre } from './lib/pdfRegistre';
+import { uploaderBulletin, ouvrirBulletinStorage, supprimerBulletinStorage } from './lib/storageBulletins';
 import './App.css';
 
 /* ==========================================================================
@@ -121,18 +123,9 @@ function ouvrirDB() {
   });
 }
 
-async function enregistrerFichier(file) {
-  const db = await ouvrirDB();
-  const id = uid('fic');
-  const blob = new Blob([await file.arrayBuffer()], { type: file.type });
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction('bulletins', 'readwrite');
-    tx.objectStore('bulletins').put({ id, blob, nom: file.name, type: file.type, taille: file.size });
-    tx.oncomplete = () => resolve({ id, nom: file.name, type: file.type, taille: file.size });
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
+// Conservée en lecture seule pour les bulletins importés avant la
+// synchronisation via Supabase Storage (voir storageBulletins.js) — les
+// nouveaux imports n'écrivent plus dans cette base locale.
 async function lireFichier(id) {
   const db = await ouvrirDB();
   return new Promise((resolve, reject) => {
@@ -152,9 +145,21 @@ async function supprimerFichier(id) {
   });
 }
 
-async function ouvrirBulletin(id) {
-  const f = await lireFichier(id);
-  if (!f) { alert("Ce bulletin est introuvable : il a peut-être été supprimé, ou ouvert depuis un autre navigateur."); return; }
+// "bulletin.path" présent → fichier dans Supabase Storage (importé depuis la
+// version synchronisée entre appareils). Absent → ancien bulletin importé
+// avant cette synchronisation, encore uniquement dans l'IndexedDB local de
+// l'appareil qui l'a créé.
+async function ouvrirBulletin(bulletin) {
+  if (bulletin && bulletin.path) {
+    try {
+      await ouvrirBulletinStorage(bulletin.path);
+    } catch (e) {
+      alert("Impossible d'ouvrir ce bulletin : " + (e && e.message ? e.message : 'erreur inconnue'));
+    }
+    return;
+  }
+  const f = await lireFichier(bulletin.id || bulletin);
+  if (!f) { alert("Ce bulletin est introuvable : il a peut-être été importé depuis un autre appareil avant la synchronisation, ou supprimé."); return; }
   const url = URL.createObjectURL(f.blob);
   window.open(url, '_blank');
   setTimeout(() => URL.revokeObjectURL(url), 60000);
@@ -283,6 +288,14 @@ function joursAvantDluo(dluo) {
   const d = new Date(dluo + 'T00:00:00');
   if (isNaN(d)) return null;
   return Math.round((d - new Date(today() + 'T00:00:00')) / 86400000);
+}
+
+/* --- Premier jour ouvrable (lun-ven) suivant une date --- */
+function jourOuvrableSuivant(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + 1);
+  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
+  return d.toISOString().split('T')[0];
 }
 
 /* --- Lots fournisseur périmés ou proches de la péremption, encore en stock --- */
@@ -927,7 +940,7 @@ function ModaleControle({ lot, contenants, onValider, onFermer }) {
   );
 }
 
-function ModaleAnalyse({ lot, contenants, onValider, onFermer }) {
+function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer }) {
   const [f, setF] = useState({
     lotId: lot.id, date: today(), heure: nowTime(),
     contenantId: (lot.contenants[0] || {}).contenantId || '',
@@ -946,7 +959,7 @@ function ModaleAnalyse({ lot, contenants, onValider, onFermer }) {
       const metas = [];
       for (const file of fichiers) {
         if (file.size > 12 * 1024 * 1024) { alert(`${file.name} dépasse 12 Mo et n'a pas été importé.`); continue; }
-        metas.push(await enregistrerFichier(file));
+        metas.push(await uploaderBulletin(userId, file));
       }
       setF((p) => ({ ...p, bulletins: [...p.bulletins, ...metas] }));
     } catch (err) {
@@ -955,9 +968,12 @@ function ModaleAnalyse({ lot, contenants, onValider, onFermer }) {
     setChargement(false);
   };
 
-  const retirer = async (id) => {
-    await supprimerFichier(id);
-    setF((p) => ({ ...p, bulletins: p.bulletins.filter((b) => b.id !== id) }));
+  const retirer = async (b) => {
+    try {
+      if (b.path) await supprimerBulletinStorage(b.path);
+      else await supprimerFichier(b.id);
+    } catch { /* le fichier restera orphelin côté stockage, sans impact fonctionnel */ }
+    setF((p) => ({ ...p, bulletins: p.bulletins.filter((x) => x.id !== b.id) }));
   };
 
   return (
@@ -1002,7 +1018,7 @@ function ModaleAnalyse({ lot, contenants, onValider, onFermer }) {
           {f.bulletins.map((b) => (
             <span className="chip" key={b.id}>
               📄 {b.nom} <span className="muted">({formaterTaille(b.taille)})</span>
-              <button onClick={() => retirer(b.id)}>✕</button>
+              <button onClick={() => retirer(b)}>✕</button>
             </span>
           ))}
         </div>
@@ -1058,10 +1074,11 @@ function ModaleTravail({ lot, contenants, onValider, onFermer }) {
 
 function ModalePerte({ lot, contenants, onValider, onFermer }) {
   const [f, setF] = useState({
-    lotId: lot.id, date: today(), volume: '',
+    lotId: lot.id, date: today(), volume: '', poidsKg: '',
     contenantId: (lot.contenants[0] || {}).contenantId || '', motif: '',
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const motifPoubelle = MOTIFS_POUBELLE.includes(f.motif);
   return (
     <Modal title="Sortie de volume" subtitle={`Lot ${lot.code} — perte, lies, échantillon, dégustation…`} onClose={onFermer}>
       <div className="field-grid">
@@ -1083,6 +1100,11 @@ function ModalePerte({ lot, contenants, onValider, onFermer }) {
           {['Marc / rafle', 'Lies / bourbes', 'Perte de cave', 'Échantillon', 'Dégustation', 'Sortie vrac', 'Distillation', 'Autre'].map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
       </Field>
+      {motifPoubelle && (
+        <Field label="Poids (kg)" hint="Optionnel — le marc/rafle et les lies/bourbes se pèsent souvent plus facilement qu'ils ne se mesurent en volume">
+          <input type="number" step="1" value={f.poidsKg} onChange={(e) => set('poidsKg', e.target.value)} />
+        </Field>
+      )}
       <div className="form-actions">
         <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>Enregistrer</button>
         <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
@@ -1307,11 +1329,13 @@ function ModaleEditLot({ lot, contenants, onValider, onFermer }) {
   );
 }
 
-function ModaleLieu({ onValider, onFermer }) {
-  const [f, setF] = useState({ nom: '', type: 'cuverie', usage: 'vinification' });
+function ModaleLieu({ lieu, onValider, onFermer }) {
+  const [f, setF] = useState(lieu
+    ? { nom: lieu.nom, type: lieu.type, usage: lieu.usage }
+    : { nom: '', type: 'cuverie', usage: 'vinification' });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   return (
-    <Modal title="Nouveau lieu" subtitle="Une cuverie, un chai à barriques, une zone de stockage…" onClose={onFermer}>
+    <Modal title={lieu ? 'Modifier le lieu' : 'Nouveau lieu'} subtitle="Une cuverie, un chai à barriques, une zone de stockage…" onClose={onFermer}>
       <Field label="Nom" hint="ex : Cuverie de vinification, Chai à barriques rouges">
         <input type="text" value={f.nom} onChange={(e) => set('nom', e.target.value)} />
       </Field>
@@ -1329,7 +1353,35 @@ function ModaleLieu({ onValider, onFermer }) {
         </Field>
       </div>
       <div className="form-actions">
-        <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>Créer</button>
+        <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>{lieu ? 'Enregistrer' : 'Créer'}</button>
+        <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
+      </div>
+    </Modal>
+  );
+}
+
+function ModaleEditContenant({ contenant, onValider, onFermer }) {
+  const estBarrique = contenant.type === 'barrique';
+  const [f, setF] = useState({
+    nom: contenant.nom, capacite: String(contenant.capacite || ''), materiau: contenant.materiau || '',
+    tonnelier: contenant.tonnelier || '', annee: contenant.annee || '',
+  });
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  return (
+    <Modal title="Modifier le contenant" onClose={onFermer}>
+      <div className="field-grid">
+        <Field label="Nom"><input type="text" value={f.nom} onChange={(e) => set('nom', e.target.value)} /></Field>
+        <Field label="Capacité (hL)"><input type="number" step="0.01" value={f.capacite} onChange={(e) => set('capacite', e.target.value)} /></Field>
+      </div>
+      <div className="field-grid">
+        <Field label="Matériau"><input type="text" value={f.materiau} onChange={(e) => set('materiau', e.target.value)} /></Field>
+        {estBarrique && <Field label="Tonnelier"><input type="text" value={f.tonnelier} onChange={(e) => set('tonnelier', e.target.value)} /></Field>}
+      </div>
+      {estBarrique && (
+        <Field label="Année"><input type="text" value={f.annee} onChange={(e) => set('annee', e.target.value)} /></Field>
+      )}
+      <div className="form-actions">
+        <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>Enregistrer</button>
         <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
       </div>
     </Modal>
@@ -1581,11 +1633,13 @@ function ModaleImportIA({ scope, onImporter, onFermer }) {
   );
 }
 
-function ModaleProduit({ onValider, onFermer }) {
-  const [f, setF] = useState({ nom: '', categorie: 'Divers', unite: 'kg', seuil: '', fournisseur: '', manipType: '' });
+function ModaleProduit({ produit, onValider, onFermer }) {
+  const [f, setF] = useState(produit
+    ? { nom: produit.nom, categorie: produit.categorie, unite: produit.unite, seuil: String(produit.seuil || ''), fournisseur: produit.fournisseur || '', manipType: produit.manipType || '' }
+    : { nom: '', categorie: 'Divers', unite: 'kg', seuil: '', fournisseur: '', manipType: '' });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   return (
-    <Modal title="Nouveau produit œnologique" onClose={onFermer}>
+    <Modal title={produit ? 'Modifier le produit' : 'Nouveau produit œnologique'} onClose={onFermer}>
       <Field label="Nom"><input type="text" value={f.nom} onChange={(e) => set('nom', e.target.value)} /></Field>
       <div className="field-grid">
         <Field label="Catégorie">
@@ -1610,21 +1664,24 @@ function ModaleProduit({ onValider, onFermer }) {
         </select>
       </Field>
       <div className="form-actions">
-        <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>Créer</button>
+        <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>{produit ? 'Enregistrer' : 'Créer'}</button>
         <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
       </div>
     </Modal>
   );
 }
 
-function ModaleProduitDetail({ produit, onEntree, onFermer }) {
+function ModaleProduitDetail({ produit, onEntree, onModifier, onSupprimerMouvement, onFermer }) {
   const lotsF = stockParLotFournisseur(produit);
   const mvts = [...(produit.mouvements || [])].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   return (
     <Modal title={produit.nom} subtitle={`${produit.categorie} · stock actuel ${stockProduit(produit)} ${produit.unite}`} onClose={onFermer} large>
       <div className="panel-head">
         <h4 style={{ margin: 0 }}>Lots fournisseur en stock</h4>
-        <button className="btn btn-primary btn-sm" onClick={onEntree}>+ Entrée en stock</button>
+        <div className="quick-row">
+          <button className="btn btn-outline btn-sm" onClick={onModifier}>Modifier le produit</button>
+          <button className="btn btn-primary btn-sm" onClick={onEntree}>+ Entrée en stock</button>
+        </div>
       </div>
       {lotsF.length === 0 ? <p className="muted">Aucun mouvement enregistré.</p> : (
         <table className="data-table compact">
@@ -1656,7 +1713,7 @@ function ModaleProduitDetail({ produit, onEntree, onFermer }) {
       <h4 style={{ marginTop: 22 }}>Historique des mouvements ({mvts.length})</h4>
       {mvts.length === 0 ? <p className="muted">Aucun mouvement.</p> : (
         <table className="data-table compact">
-          <thead><tr><th>Date</th><th>Sens</th><th>Quantité</th><th>N° de lot</th><th>Motif</th></tr></thead>
+          <thead><tr><th>Date</th><th>Sens</th><th>Quantité</th><th>N° de lot</th><th>Motif</th><th></th></tr></thead>
           <tbody>
             {mvts.map((m) => (
               <tr key={m.id}>
@@ -1667,6 +1724,11 @@ function ModaleProduitDetail({ produit, onEntree, onFermer }) {
                 </td>
                 <td className="small">{m.numeroLotFournisseur || '—'}</td>
                 <td className="small">{m.motif || '—'}</td>
+                <td>
+                  {m.sens === 'entree' && (
+                    <button className="btn btn-ghost btn-sm" onClick={() => onSupprimerMouvement(m.id)}>✕</button>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -1897,13 +1959,25 @@ export default function CahierDeChai() {
   const chargementInitialFait = useRef(false);
   const minuteurSync = useRef(null);
 
-  // Au login : on récupère l'état déjà en ligne, ou on y pousse l'état local
-  // actuel s'il n'existe pas encore (première connexion depuis cet appareil).
+  // Au login : si la session précédente s'est arrêtée avant d'avoir confirmé
+  // l'envoi de ses dernières modifications (coupure réseau, app fermée
+  // pendant le débounce…), on les pousse en priorité au lieu d'aller chercher
+  // l'état cloud — sinon un état cloud plus ancien écraserait silencieusement
+  // des saisies jamais synchronisées (relevés, apports…).
   useEffect(() => {
     if (!user) { chargementInitialFait.current = false; return; }
     let annule = false;
     (async () => {
       try {
+        const enAttente = localStorage.getItem('cdc_pending_sync');
+        if (enAttente) {
+          await sauvegarderEtat(user.uid, { domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements });
+          if (annule) return;
+          localStorage.removeItem('cdc_pending_sync');
+          chargementInitialFait.current = true;
+          setSyncEtat({ statut: 'synchronise', quand: new Date() });
+          return;
+        }
         const cloud = await chargerEtat(user.uid);
         if (annule) return;
         if (cloud) {
@@ -1928,14 +2002,19 @@ export default function CahierDeChai() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
-  // À chaque changement de données, on republie vers Supabase (débounce 1 s)
+  // À chaque changement de données, on republie vers Supabase (débounce 1 s).
+  // Le marqueur "cdc_pending_sync" est posé immédiatement (avant même le
+  // débounce) et n'est retiré qu'après confirmation d'envoi : s'il est encore
+  // là au prochain démarrage, c'est qu'un envoi a été interrompu.
   useEffect(() => {
     if (!user || !chargementInitialFait.current) return;
+    localStorage.setItem('cdc_pending_sync', String(Date.now()));
     setSyncEtat((s) => ({ ...s, statut: 'en_cours' }));
     clearTimeout(minuteurSync.current);
     minuteurSync.current = setTimeout(async () => {
       try {
         await sauvegarderEtat(user.uid, { domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements });
+        localStorage.removeItem('cdc_pending_sync');
         setSyncEtat({ statut: 'synchronise', quand: new Date() });
       } catch (e) {
         setSyncEtat({ statut: 'horsligne', quand: null });
@@ -2015,15 +2094,35 @@ export default function CahierDeChai() {
          (marc, lies, bourbes), tous lots et tous temps confondus --- */
   const poubelle = useMemo(() => {
     const parMotif = {};
-    let total = 0;
+    const parMotifKg = {};
+    let total = 0, totalKg = 0;
     Object.values(lots).forEach((l) => {
       (l.operations || []).forEach((o) => {
         if (o.type !== 'perte' || !MOTIFS_POUBELLE.includes(o.motif)) return;
         parMotif[o.motif] = round2((parMotif[o.motif] || 0) + (Number(o.volume) || 0));
         total += Number(o.volume) || 0;
+        if (o.poidsKg) {
+          parMotifKg[o.motif] = round2((parMotifKg[o.motif] || 0) + Number(o.poidsKg));
+          totalKg += Number(o.poidsKg);
+        }
       });
     });
-    return { parMotif, total: round2(total) };
+    return { parMotif, parMotifKg, total: round2(total), totalKg: round2(totalKg) };
+  }, [lots]);
+
+  /* --- Manipulations réglementaires probablement inscrites en retard par
+         rapport au délai FGVB (estimation indicative, basée sur la date de
+         saisie réelle dans l'app vs la date de l'opération déclarée) --- */
+  const retardsRegistre = useMemo(() => {
+    const out = [];
+    Object.values(lots).forEach((l) => {
+      (l.operations || []).filter((o) => o.type === 'manipulation' && o.saisieLe).forEach((o) => {
+        const saisieDate = o.saisieLe.slice(0, 10);
+        const limite = o.manipType === 'enrichissement' ? o.date : jourOuvrableSuivant(o.date);
+        if (saisieDate > limite) out.push({ ...o, _lot: l });
+      });
+    });
+    return out.sort((a, b) => b.date.localeCompare(a.date));
   }, [lots]);
 
   /* =========================================================================
@@ -2053,6 +2152,13 @@ export default function CahierDeChai() {
     const occ = occupationParContenant[form.contenantId];
     const parcelle = parcelles[form.parcelleId];
     const cep = parcelle ? cepages[parcelle.cepageId] : null;
+    const contenantCible = contenants[form.contenantId];
+    const volDejaPresent = occ ? occ.volume : 0;
+    if (contenantCible && contenantCible.capacite && volDejaPresent + volume > contenantCible.capacite + 0.001) {
+      if (!window.confirm(
+        `Le volume dépasse la capacité de ${contenantCible.nom} (${contenantCible.capacite} hL). Continuer quand même ?`
+      )) return false;
+    }
 
     if (occ) {
       // Le contenant contient déjà du vin → on complète le lot existant
@@ -2309,7 +2415,8 @@ export default function CahierDeChai() {
         .filter((c) => c.volume > 0.001);
       l.operations = [...(l.operations || []), {
         id: uid('op'), type: 'perte', date: form.date, volume: v,
-        contenantId: form.contenantId, motif: form.motif || '', auteur: user.id,
+        contenantId: form.contenantId, motif: form.motif || '',
+        poidsKg: form.poidsKg ? Number(form.poidsKg) : null, auteur: user.id,
       }];
       if (volumeLot(l) <= 0.001) l.statut = 'archive';
       return { ...prev, [form.lotId]: l };
@@ -2326,6 +2433,7 @@ export default function CahierDeChai() {
       designationAvant: form.designationAvant || '', designationApres: form.designationApres || '',
       responsable: form.responsable || '', dateFiltration: form.dateFiltration || '',
       critere8515: form.critere8515 || '', notes: form.notes || '', auteur: user.id,
+      saisieLe: new Date().toISOString(),
     });
     return true;
   };
@@ -2474,6 +2582,11 @@ export default function CahierDeChai() {
     setLieux((p) => ({ ...p, [id]: { id, nom: f.nom, type: f.type || 'cuverie', usage: f.usage || 'vinification' } }));
     return true;
   };
+  const majLieu = (id, f) => {
+    if (!f.nom) { alert('Nom obligatoire'); return false; }
+    setLieux((p) => ({ ...p, [id]: { ...p[id], nom: f.nom, type: f.type || 'cuverie', usage: f.usage || 'vinification' } }));
+    return true;
+  };
   const supprimerLieu = (id) => {
     const utilise = Object.values(contenants).some((c) => c.lieuId === id);
     if (utilise) { alert('Ce lieu contient des contenants : supprime-les ou déplace-les d\'abord.'); return; }
@@ -2532,6 +2645,17 @@ export default function CahierDeChai() {
     return true;
   };
 
+  const majContenant = (id, f) => {
+    if (!f.nom) { alert('Nom obligatoire'); return false; }
+    setContenants((p) => ({
+      ...p,
+      [id]: {
+        ...p[id], nom: f.nom, capacite: Number(f.capacite) || 0, materiau: f.materiau || '',
+        tonnelier: f.tonnelier || '', annee: f.annee || '',
+      },
+    }));
+    return true;
+  };
   const supprimerContenant = (id) => {
     if (occupationParContenant[id]) { alert('Ce contenant est occupé par un lot : vide-le d\'abord.'); return; }
     if (!window.confirm('Supprimer ce contenant ?')) return;
@@ -2659,9 +2783,40 @@ export default function CahierDeChai() {
     }));
     return true;
   };
+  const majProduit = (id, f) => {
+    if (!f.nom) { alert('Nom obligatoire'); return false; }
+    setProduits((p) => ({
+      ...p,
+      [id]: {
+        ...p[id], nom: f.nom, categorie: f.categorie || 'Divers', unite: f.unite || 'kg',
+        seuil: Number(f.seuil) || 0, fournisseur: f.fournisseur || '', manipType: f.manipType || '',
+      },
+    }));
+    return true;
+  };
   const supprimerProduit = (id) => {
     if (!window.confirm('Supprimer ce produit et son historique de stock ?')) return;
     setProduits((p) => { const n = { ...p }; delete n[id]; return n; });
+  };
+  const supprimerMouvementProduit = (produitId, mouvementId) => {
+    const prod = produits[produitId];
+    const m = (prod.mouvements || []).find((x) => x.id === mouvementId);
+    if (!m) return;
+    if (m.sens === 'sortie') {
+      alert("Cette sortie est liée à un ajout de produit sur une cuve : supprime plutôt l'opération correspondante depuis la fiche du lot, pour ne pas casser la traçabilité.");
+      return;
+    }
+    const cle = m.numeroLotFournisseur || '(sans n° de lot)';
+    const infosLot = stockParLotFournisseur(prod).find((l) => l.numeroLot === cle);
+    if (infosLot && infosLot.sorti > 0) {
+      alert(`Impossible de supprimer cette entrée : ${infosLot.sorti} ${prod.unite} de ce lot ont déjà été utilisés. Corrige d'abord les sorties concernées.`);
+      return;
+    }
+    if (!window.confirm('Supprimer cette entrée en stock ?')) return;
+    setProduits((p) => ({
+      ...p,
+      [produitId]: { ...p[produitId], mouvements: p[produitId].mouvements.filter((x) => x.id !== mouvementId) },
+    }));
   };
   const entrerStock = (f) => {
     const q = Number(f.quantite);
@@ -3010,6 +3165,12 @@ export default function CahierDeChai() {
     XLSX.writeFile(wb, `cahier-de-chai-${today()}.xlsx`);
   };
 
+  const exporterRegistrePdf = () => {
+    genererPdfRegistre(domaine, lots, parcelles, cepages, contenants, MANIP_TYPES)
+      .then((blob) => telechargerBlob(blob, `registre-${today()}.pdf`))
+      .catch((e) => alert("Le PDF du registre n'a pas pu être généré : " + (e && e.message ? e.message : 'erreur inconnue')));
+  };
+
   /* Fiche de traçabilité d'un lot, au format tableur */
   const exporterTracabilite = (lotId) => {
     const lot = lots[lotId];
@@ -3288,7 +3449,7 @@ export default function CahierDeChai() {
         return <ModaleAjoutProduit lot={lots[payload.lotId]} produits={produits} contenants={contenants}
           onValider={ajouterProduitAuLot} onFermer={fermer} />;
       case 'analyse':
-        return <ModaleAnalyse lot={lots[payload.lotId]} contenants={contenants} onValider={enregistrerAnalyse} onFermer={fermer} />;
+        return <ModaleAnalyse lot={lots[payload.lotId]} contenants={contenants} userId={user.uid} onValider={enregistrerAnalyse} onFermer={fermer} />;
       case 'controle':
         return <ModaleControle lot={lots[payload.lotId]} contenants={contenants} onValider={enregistrerControle} onFermer={fermer} />;
       case 'travail':
@@ -3304,9 +3465,11 @@ export default function CahierDeChai() {
       case 'editLot':
         return <ModaleEditLot lot={lots[payload.lotId]} contenants={contenants} onValider={(f) => majLot(payload.lotId, f)} onFermer={fermer} />;
       case 'lieu':
-        return <ModaleLieu onValider={ajouterLieu} onFermer={fermer} />;
+        return <ModaleLieu lieu={payload.lieu} onValider={payload.lieu ? (f) => majLieu(payload.lieu.id, f) : ajouterLieu} onFermer={fermer} />;
       case 'contenants':
         return <ModaleContenants lieux={lieux} lieuInitial={payload.lieuId} onValider={ajouterContenants} onFermer={fermer} />;
+      case 'editContenant':
+        return <ModaleEditContenant contenant={contenants[payload.contenantId]} onValider={(f) => majContenant(payload.contenantId, f)} onFermer={fermer} />;
       case 'cepage':
         return <ModaleCepage cepage={payload.cepage} onValider={payload.cepage ? (f) => majCepage(payload.cepage.id, f) : ajouterCepage} onFermer={fermer} />;
       case 'parcelles':
@@ -3314,14 +3477,17 @@ export default function CahierDeChai() {
       case 'importIA':
         return <ModaleImportIA scope={payload.scope} onImporter={importerReferentielIA} onFermer={fermer} />;
       case 'produit':
-        return <ModaleProduit onValider={ajouterProduit} onFermer={fermer} />;
+        return <ModaleProduit produit={payload.produit} onValider={payload.produit ? (f) => majProduit(payload.produit.id, f) : ajouterProduit} onFermer={fermer} />;
       case 'entreeStock':
         return <ModaleEntreeStock produit={produits[payload.produitId]} onValider={entrerStock} onFermer={fermer} />;
       case 'importBonLivraison':
         return <ModaleImportBonLivraison produits={produits} onImporter={importerProduitsIA} onFermer={fermer} />;
       case 'produitDetail':
         return <ModaleProduitDetail produit={produits[payload.produitId]}
-          onEntree={() => ouvrir('entreeStock', { produitId: payload.produitId })} onFermer={fermer} />;
+          onEntree={() => ouvrir('entreeStock', { produitId: payload.produitId })}
+          onModifier={() => ouvrir('produit', { produit: produits[payload.produitId] })}
+          onSupprimerMouvement={(mid) => supprimerMouvementProduit(payload.produitId, mid)}
+          onFermer={fermer} />;
       default:
         return null;
     }
@@ -3438,12 +3604,14 @@ export default function CahierDeChai() {
                 <div className="panel">
                   <div className="panel-head">
                     <h3 className="panel-title">Poubelle viticole</h3>
-                    <span className="muted small">{poubelle.total} hL évacués au total</span>
+                    <span className="muted small">
+                      {poubelle.total} hL{poubelle.totalKg > 0 ? ` · ${poubelle.totalKg} kg` : ''} évacués au total
+                    </span>
                   </div>
                   {MOTIFS_POUBELLE.filter((m) => poubelle.parMotif[m] > 0).map((m) => (
                     <div className="ref-list-row" key={m}>
                       <span>{m}</span>
-                      <strong>{poubelle.parMotif[m]} hL</strong>
+                      <strong>{poubelle.parMotif[m]} hL{poubelle.parMotifKg[m] ? ` · ${poubelle.parMotifKg[m]} kg` : ''}</strong>
                     </div>
                   ))}
                   <p className="muted small" style={{ margin: '10px 0 0' }}>
@@ -3724,7 +3892,7 @@ export default function CahierDeChai() {
                               {['transfert', 'reception', 'origine', 'deplacement'].includes(o.type) && (
                                 <div>{o.motif} — {o.volume} hL · {nomContenant(o.contenantSourceId)} → {nomContenant(o.contenantDestId)}{o.lotAutreCode ? ` · lot ${o.lotAutreCode}` : ''}</div>
                               )}
-                              {o.type === 'perte' && <div>{o.motif} — {o.volume} hL</div>}
+                              {o.type === 'perte' && <div>{o.motif} — {o.volume} hL{o.poidsKg ? ` · ${o.poidsKg} kg` : ''}</div>}
                               {o.type === 'manipulation' && <div>{MANIP_TYPES[o.manipType].label}{o.produit ? ` — ${o.produit}` : ''}{o.quantiteProduit ? ` (${o.quantiteProduit})` : ''}</div>}
                               {o.type === 'mise' && <div>Lot {o.numeroLot} — {o.volume} hL</div>}
                               {o.notes && <div className="timeline-note">{o.notes}</div>}
@@ -3999,15 +4167,16 @@ export default function CahierDeChai() {
                                   <td>📄 {b.nom}</td>
                                   <td className="small">{formaterTaille(b.taille)}</td>
                                   <td className="small">{b.lotCode}</td>
-                                  <td><button className="btn btn-outline btn-sm" onClick={() => ouvrirBulletin(b.id)}>Ouvrir</button></td>
+                                  <td><button className="btn btn-outline btn-sm" onClick={() => ouvrirBulletin(b)}>Ouvrir</button></td>
                                 </tr>
                               ))}
                             </tbody>
                           </table>
                         )}
                         <p className="muted small">
-                          Les bulletins sont stockés dans ce navigateur, séparément du reste. Ils ne suivent pas l'export Excel :
-                          garde tes originaux archivés de ton côté.
+                          Les bulletins importés sont synchronisés entre tes appareils, mais séparément du reste et ils ne suivent pas
+                          l'export Excel : garde tes originaux archivés de ton côté. (Les bulletins importés avant cette mise à jour
+                          restent visibles uniquement sur l'appareil qui les a créés.)
                         </p>
                       </div>
                     </>
@@ -4106,7 +4275,7 @@ export default function CahierDeChai() {
                                 {o.type === 'travail' && o.action}
                                 {o.type === 'controle' && `${o.moment === 'matin' ? 'Matin' : o.moment === 'soir' ? 'Soir' : 'Contrôle'} — ${o.temperature !== null && o.temperature !== undefined ? o.temperature + ' °C' : '—'} · densité ${o.densite !== null && o.densite !== undefined ? o.densite : '—'}`}
                                 {['transfert', 'reception', 'origine', 'deplacement'].includes(o.type) && `${o.motif} ${o.volume} hL → ${nomContenant(o.contenantDestId)}`}
-                                {o.type === 'perte' && `${o.motif} — ${o.volume} hL`}
+                                {o.type === 'perte' && `${o.motif} — ${o.volume} hL${o.poidsKg ? ` · ${o.poidsKg} kg` : ''}`}
                                 {o.type === 'manipulation' && `${MANIP_TYPES[o.manipType].label}${o.produit ? ` — ${o.produit}` : ''}`}
                                 {o.type === 'mise' && `Lot ${o.numeroLot} — ${o.volume} hL`}
                                 {o.type === 'phase' && o.notes}
@@ -4279,6 +4448,7 @@ export default function CahierDeChai() {
 
           {/* ===================== REGISTRE GLOBAL ===================== */}
           {vue === 'registre' && (() => {
+            const q = recherche.trim().toLowerCase();
             const toutes = [];
             Object.values(lots).forEach((l) => {
               (l.operations || []).filter((o) => o.type === 'manipulation').forEach((o) => toutes.push({ ...o, _lot: l }));
@@ -4287,14 +4457,30 @@ export default function CahierDeChai() {
             Object.values(lots).forEach((l) => {
               (l.operations || []).filter((o) => o.type === 'apport').forEach((o) => apports.push({ ...o, _lot: l }));
             });
+            const correspond = (o) => {
+              if (!q) return true;
+              const p = parcelles[o.parcelleId];
+              const cep = p ? cepages[p.cepageId] : null;
+              return o._lot.code.toLowerCase().includes(q)
+                || (o.produit || '').toLowerCase().includes(q)
+                || (p && p.nom.toLowerCase().includes(q))
+                || (cep && cep.nom.toLowerCase().includes(q));
+            };
+            const apportsFiltres = apports.filter(correspond);
+            const manipsFiltrees = toutes.filter(correspond);
             return (
               <>
                 <header className="page-head">
                   <div className="page-head-row">
                     <h1>Registre réglementaire</h1>
-                    <button className="btn btn-primary" onClick={exporterExcel}>Exporter le registre complet</button>
+                    <div className="quick-row">
+                      <button className="btn btn-outline" onClick={exporterRegistrePdf}>Exporter en PDF</button>
+                      <button className="btn btn-primary" onClick={exporterExcel}>Exporter le registre complet</button>
+                    </div>
                   </div>
                   <p>Registre unique de manipulations, entrées de vendange et conditionnement — modèle FGVB.</p>
+                  <input className="recherche" placeholder="Rechercher un lot, une parcelle, un cépage, un produit…"
+                    value={recherche} onChange={(e) => setRecherche(e.target.value)} />
                 </header>
 
                 <div className="info-banner">
@@ -4302,13 +4488,31 @@ export default function CahierDeChai() {
                   modification reste apparente. Pense à imprimer et classer tes exports au fil des opérations.
                 </div>
 
+                {retardsRegistre.length > 0 && (
+                  <div className="panel">
+                    <h3 className="panel-title">Inscriptions tardives à vérifier</h3>
+                    <p className="muted small" style={{ marginTop: -6 }}>
+                      Estimation indicative à partir du délai réglementaire du type de manipulation — vérifie toi-même en cas de doute.
+                    </p>
+                    {retardsRegistre.map((r) => (
+                      <div className="ref-list-row" key={r.id}>
+                        <span>
+                          <button className="lien" onClick={() => ouvrirLot(r._lot.id)}>{r._lot.code}</button>
+                          {' '}· {MANIP_TYPES[r.manipType].label} du {r.date}
+                        </span>
+                        <span className="warn-text">saisi le {r.saisieLe.slice(0, 10)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 <div className="panel">
-                  <h3 className="panel-title">Entrées de vendange ({apports.length})</h3>
-                  {apports.length === 0 ? <p className="muted">Aucun apport enregistré.</p> : (
+                  <h3 className="panel-title">Entrées de vendange ({apportsFiltres.length})</h3>
+                  {apportsFiltres.length === 0 ? <p className="muted">Aucun apport.</p> : (
                     <table className="data-table compact">
                       <thead><tr><th>Date</th><th>Parcelle</th><th>Cépage</th><th>Appellation</th><th>Contenant</th><th>Volume</th><th>Poids</th></tr></thead>
                       <tbody>
-                        {apports.sort((a, b) => b.date.localeCompare(a.date)).map((o) => {
+                        {apportsFiltres.sort((a, b) => b.date.localeCompare(a.date)).map((o) => {
                           const p = parcelles[o.parcelleId];
                           const cep = p ? cepages[p.cepageId] : null;
                           return (
@@ -4329,7 +4533,7 @@ export default function CahierDeChai() {
                 </div>
 
                 {Object.keys(MANIP_TYPES).map((type) => {
-                  const liste = toutes.filter((o) => o.manipType === type);
+                  const liste = manipsFiltrees.filter((o) => o.manipType === type);
                   if (!liste.length) return null;
                   return (
                     <div className="panel" key={type}>
@@ -4362,71 +4566,88 @@ export default function CahierDeChai() {
                 {toutes.length === 0 && (
                   <div className="panel"><p className="muted">Aucune manipulation réglementaire inscrite pour le moment.</p></div>
                 )}
+                {toutes.length > 0 && manipsFiltrees.length === 0 && q && (
+                  <div className="panel"><p className="muted">Aucune manipulation ne correspond à « {recherche} ».</p></div>
+                )}
               </>
             );
           })()}
 
           {/* ===================== MISE EN BOUTEILLE ===================== */}
-          {vue === 'mise' && (
-            <>
-              <header className="page-head">
-                <h1>Mise en bouteille</h1>
-                <p>Chaque mise fige la traçabilité du lot et lui attribue un numéro identifiable.</p>
-              </header>
+          {vue === 'mise' && (() => {
+            const q = recherche.trim().toLowerCase();
+            const lotsFiltres = lotsActifs.filter((l) => !q
+              || l.code.toLowerCase().includes(q)
+              || compositionParCepage(l, parcelles, cepages).some((c) => c.nom.toLowerCase().includes(q)));
+            const misesFiltrees = [...conditionnements]
+              .filter((c) => !q
+                || c.lotCode.toLowerCase().includes(q)
+                || c.numeroLot.toLowerCase().includes(q)
+                || (c.designation || '').toLowerCase().includes(q))
+              .sort((a, b) => b.date.localeCompare(a.date));
+            return (
+              <>
+                <header className="page-head">
+                  <h1>Mise en bouteille</h1>
+                  <p>Chaque mise fige la traçabilité du lot et lui attribue un numéro identifiable.</p>
+                  <input className="recherche" placeholder="Rechercher un lot, un cépage, une désignation, un n° de lot…"
+                    value={recherche} onChange={(e) => setRecherche(e.target.value)} />
+                </header>
 
-              <div className="panel">
-                <h3 className="panel-title">Lots prêts à être mis</h3>
-                {lotsActifs.length === 0 ? <p className="muted">Aucun lot en cave.</p> : (
-                  <table className="data-table compact">
-                    <thead><tr><th>Lot</th><th>Composition</th><th>Volume</th><th>Phase</th><th></th></tr></thead>
-                    <tbody>
-                      {lotsActifs.map((l) => (
-                        <tr key={l.id}>
-                          <td><strong><ColorDot couleur={couleurLot(l, parcelles, cepages)} />{l.code}</strong></td>
-                          <td className="small">{compositionParCepage(l, parcelles, cepages).map((c) => `${c.pct} % ${c.nom}`).join(' · ')}</td>
-                          <td>{volumeLot(l)} hL</td>
-                          <td><PhaseBadge phase={l.phase} /></td>
-                          <td className="actions-cell">
-                            <button className="btn btn-outline btn-sm" onClick={() => ouvrirLot(l.id)}>Ouvrir</button>
-                            <button className="btn btn-primary btn-sm" onClick={() => ouvrir('mise', { lotId: l.id })}>Mettre en bouteille</button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
+                <div className="panel">
+                  <h3 className="panel-title">Lots prêts à être mis</h3>
+                  {lotsFiltres.length === 0 ? <p className="muted">Aucun lot.</p> : (
+                    <table className="data-table compact">
+                      <thead><tr><th>Lot</th><th>Composition</th><th>Volume</th><th>Phase</th><th></th></tr></thead>
+                      <tbody>
+                        {lotsFiltres.map((l) => (
+                          <tr key={l.id}>
+                            <td><strong><ColorDot couleur={couleurLot(l, parcelles, cepages)} />{l.code}</strong></td>
+                            <td className="small">{compositionParCepage(l, parcelles, cepages).map((c) => `${c.pct} % ${c.nom}`).join(' · ')}</td>
+                            <td>{volumeLot(l)} hL</td>
+                            <td><PhaseBadge phase={l.phase} /></td>
+                            <td className="actions-cell">
+                              <button className="btn btn-outline btn-sm" onClick={() => ouvrirLot(l.id)}>Ouvrir</button>
+                              <button className="btn btn-primary btn-sm" onClick={() => ouvrir('mise', { lotId: l.id })}>Mettre en bouteille</button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
 
-              <div className="panel">
-                <h3 className="panel-title">Mises réalisées ({conditionnements.length})</h3>
-                {conditionnements.length === 0 ? <p className="muted">Aucune mise enregistrée.</p> : (
-                  <table className="data-table compact">
-                    <thead><tr><th>Date</th><th>N° de lot</th><th>Lot vin</th><th>Désignation</th><th>Formats</th><th>Volume</th><th></th></tr></thead>
-                    <tbody>
-                      {[...conditionnements].sort((a, b) => b.date.localeCompare(a.date)).map((c) => (
-                        <tr key={c.id}>
-                          <td className="nowrap">{c.date}</td>
-                          <td><strong>{c.numeroLot}</strong></td>
-                          <td className="small">{c.lotCode}</td>
-                          <td className="small">{c.designation || '—'}</td>
-                          <td className="small">
-                            {c.lignes.map((li) => {
-                              const f = FORMATS_BOUTEILLE.find((x) => x.id === li.formatId);
-                              return `${li.nb} × ${f ? f.label : li.formatId}`;
-                            }).join(' · ')}
-                          </td>
-                          <td>{c.volumeHl} hL</td>
-                          <td className="actions-cell">
-                            {lots[c.lotId] && <button className="btn btn-outline btn-sm" onClick={() => exporterTracabilite(c.lotId)}>Fiche traçabilité</button>}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            </>
-          )}
+                <div className="panel">
+                  <h3 className="panel-title">Mises réalisées ({misesFiltrees.length})</h3>
+                  {misesFiltrees.length === 0 ? <p className="muted">Aucune mise enregistrée.</p> : (
+                    <table className="data-table compact">
+                      <thead><tr><th>Date</th><th>N° de lot</th><th>Lot vin</th><th>Désignation</th><th>Formats</th><th>Volume</th><th></th></tr></thead>
+                      <tbody>
+                        {misesFiltrees.map((c) => (
+                          <tr key={c.id}>
+                            <td className="nowrap">{c.date}</td>
+                            <td><strong>{c.numeroLot}</strong></td>
+                            <td className="small">{c.lotCode}</td>
+                            <td className="small">{c.designation || '—'}</td>
+                            <td className="small">
+                              {c.lignes.map((li) => {
+                                const f = FORMATS_BOUTEILLE.find((x) => x.id === li.formatId);
+                                return `${li.nb} × ${f ? f.label : li.formatId}`;
+                              }).join(' · ')}
+                            </td>
+                            <td>{c.volumeHl} hL</td>
+                            <td className="actions-cell">
+                              {lots[c.lotId] && <button className="btn btn-outline btn-sm" onClick={() => exporterTracabilite(c.lotId)}>Fiche traçabilité</button>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </>
+            );
+          })()}
 
           {/* ===================== PARAMÈTRES ===================== */}
           {vue === 'parametres' && (
@@ -4462,15 +4683,17 @@ export default function CahierDeChai() {
                       <div className="setup-group-head">
                         <strong>{l.nom}</strong>
                         <span className="muted small">{l.type === 'cuverie' ? 'Cuverie' : 'Chai à barriques'} · {USAGES_LIEU[l.usage]} · {liste.length} contenant{liste.length > 1 ? 's' : ''} · {round2(liste.reduce((s, c) => s + (c.capacite || 0), 0))} hL</span>
+                        <button className="btn btn-ghost btn-sm" onClick={() => ouvrir('lieu', { lieu: l })}>Modifier</button>
                         <button className="btn btn-outline btn-sm" onClick={() => ouvrir('contenants', { lieuId: l.id })}>+ Contenants</button>
                         <button className="btn btn-danger btn-sm" onClick={() => supprimerLieu(l.id)}>Retirer</button>
                       </div>
                       <div className="chips-wrap">
                         {liste.sort((a, b) => a.nom.localeCompare(b.nom, undefined, { numeric: true })).map((c) => (
-                          <span className={`chip ${occupationParContenant[c.id] ? 'occupe' : ''}`} key={c.id}>
+                          <span className={`chip ${occupationParContenant[c.id] ? 'occupe' : ''}`} key={c.id} style={{ cursor: 'pointer' }}
+                            onClick={() => ouvrir('editContenant', { contenantId: c.id })} title="Modifier">
                             {c.nom}{c.capacite ? ` · ${c.capacite} hL` : ''}
                             {c.type === 'lot_barriques' ? ` · ${c.nbBarriques} bq` : ''}
-                            <button onClick={() => supprimerContenant(c.id)}>✕</button>
+                            <button onClick={(e) => { e.stopPropagation(); supprimerContenant(c.id); }}>✕</button>
                           </span>
                         ))}
                         {liste.length === 0 && <span className="muted small">Aucun contenant</span>}
@@ -4522,7 +4745,7 @@ export default function CahierDeChai() {
                   <button className="btn btn-outline" onClick={() => setDomaine({ ...domaine, setupDone: false })}>Rouvrir l'assistant de paramétrage</button>
                 </div>
                 <p className="muted small">
-                  Toutes les données sont stockées dans ce navigateur, sur cet ordinateur. Exporte régulièrement pour garder une copie.
+                  Les données sont synchronisées automatiquement entre tous tes appareils. Exporte régulièrement une copie Excel pour garder une sauvegarde indépendante.
                 </p>
               </div>
             </>

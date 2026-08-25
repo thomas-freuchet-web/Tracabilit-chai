@@ -12,7 +12,7 @@ function repartirLargeurs(doc, poids) {
   return poids.map((p) => (p / somme) * total);
 }
 
-function dessinerTableau(doc, headers, rows, poids) {
+export function dessinerTableau(doc, headers, rows, poids) {
   const startX = doc.page.margins.left;
   const colWidths = repartirLargeurs(doc, poids || headers.map(() => 1));
   const rowHeight = 18;
