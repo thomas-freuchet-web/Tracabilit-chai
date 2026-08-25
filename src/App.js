@@ -1113,8 +1113,17 @@ function ModalePerte({ lot, contenants, onValider, onFermer }) {
   );
 }
 
-function ModaleManipulation({ lot, contenants, onValider, onFermer, typeInitial }) {
-  const [f, setF] = useState({
+function ModaleManipulation({ lot, contenants, onValider, onFermer, typeInitial, manipulation }) {
+  const [f, setF] = useState(manipulation ? {
+    lotId: lot.id, manipType: manipulation.manipType, date: manipulation.date,
+    contenantId: manipulation.contenantId || (lot.contenants[0] || {}).contenantId || '',
+    produit: manipulation.produit || '', quantiteProduit: manipulation.quantiteProduit || '',
+    volumeConcerne: manipulation.volumeConcerne || String(volumeLot(lot)),
+    titreAvant: manipulation.titreAvant || '', titreApres: manipulation.titreApres || '',
+    designationAvant: manipulation.designationAvant || '', designationApres: manipulation.designationApres || '',
+    responsable: manipulation.responsable || '', dateFiltration: manipulation.dateFiltration || '',
+    critere8515: manipulation.critere8515 || '', notes: manipulation.notes || '',
+  } : {
     lotId: lot.id, manipType: typeInitial || 'enrichissement', date: today(),
     contenantId: (lot.contenants[0] || {}).contenantId || '',
     produit: '', quantiteProduit: '', volumeConcerne: String(volumeLot(lot)),
@@ -1126,7 +1135,7 @@ function ModaleManipulation({ lot, contenants, onValider, onFermer, typeInitial 
   const suggestions = PRODUITS_REGLEMENTAIRES[f.manipType] || [];
 
   return (
-    <Modal title="Registre de manipulations" subtitle={`Lot ${lot.code} — inscription au registre réglementaire`} onClose={onFermer}>
+    <Modal title={manipulation ? 'Modifier la manipulation' : 'Registre de manipulations'} subtitle={`Lot ${lot.code} — inscription au registre réglementaire`} onClose={onFermer}>
       <Field label="Type de manipulation">
         <select value={f.manipType} onChange={(e) => set('manipType', e.target.value)}>
           {Object.keys(MANIP_TYPES).map((t) => <option key={t} value={t}>{MANIP_TYPES[t].label}</option>)}
@@ -1193,7 +1202,7 @@ function ModaleManipulation({ lot, contenants, onValider, onFermer, typeInitial 
 
       <Field label="Observations"><textarea value={f.notes} onChange={(e) => set('notes', e.target.value)} /></Field>
       <div className="form-actions">
-        <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>Inscrire au registre</button>
+        <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>{manipulation ? 'Enregistrer' : 'Inscrire au registre'}</button>
         <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
       </div>
     </Modal>
@@ -1331,16 +1340,18 @@ function ModaleEditLot({ lot, contenants, onValider, onFermer }) {
 
 function ModaleEditApport({ op, contenants, parcelles, onValider, onFermer }) {
   const [f, setF] = useState({
-    volume: String(op.volume), poidsKg: op.poidsKg !== null && op.poidsKg !== undefined ? String(op.poidsKg) : '',
+    date: op.date, volume: String(op.volume),
+    poidsKg: op.poidsKg !== null && op.poidsKg !== undefined ? String(op.poidsKg) : '',
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const parcelle = parcelles[op.parcelleId];
   return (
-    <Modal title="Modifier l'apport" subtitle={`${op.date} — ${parcelle ? parcelle.nom : '?'} → ${contenants[op.contenantId] ? contenants[op.contenantId].nom : '?'}`} onClose={onFermer}>
+    <Modal title="Modifier l'apport" subtitle={`${parcelle ? parcelle.nom : '?'} → ${contenants[op.contenantId] ? contenants[op.contenantId].nom : '?'}`} onClose={onFermer}>
       <div className="field-grid">
+        <Field label="Date"><input type="date" value={f.date} onChange={(e) => set('date', e.target.value)} /></Field>
         <Field label="Volume mis en cuve (hL)"><input type="number" step="0.1" value={f.volume} onChange={(e) => set('volume', e.target.value)} /></Field>
-        <Field label="Poids de vendange (kg)" hint="Optionnel"><input type="number" step="1" value={f.poidsKg} onChange={(e) => set('poidsKg', e.target.value)} /></Field>
       </div>
+      <Field label="Poids de vendange (kg)" hint="Optionnel"><input type="number" step="1" value={f.poidsKg} onChange={(e) => set('poidsKg', e.target.value)} /></Field>
       <p className="field-hint">Corrige une erreur de saisie sur cet apport précis — le volume en cuve et la composition du lot sont recalculés automatiquement.</p>
       <div className="form-actions">
         <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>Enregistrer</button>
@@ -1781,9 +1792,7 @@ function ModaleProduitDetail({ produit, onEntree, onModifier, onSupprimerMouveme
                 <td className="small">{m.numeroLotFournisseur || '—'}</td>
                 <td className="small">{m.motif || '—'}</td>
                 <td>
-                  {m.sens === 'entree' && (
-                    <button className="btn btn-ghost btn-sm" onClick={() => onSupprimerMouvement(m.id)}>✕</button>
-                  )}
+                  <button className="btn btn-ghost btn-sm" onClick={() => onSupprimerMouvement(m.id)}>✕</button>
                 </td>
               </tr>
             ))}
@@ -1986,6 +1995,7 @@ export default function CahierDeChai() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session ? { id: session.user.email, uid: session.user.id } : null);
     });
+    // eslint-disable-next-line no-unreachable
     return () => subscription.unsubscribe();
   }, []);
 
@@ -2278,6 +2288,7 @@ export default function CahierDeChai() {
   const majApport = (lotId, opId, form) => {
     const v = Number(form.volume);
     if (!v || v <= 0) { alert('Volume invalide'); return false; }
+    if (!form.date) { alert('Date obligatoire'); return false; }
     const lot = lots[lotId];
     const op = (lot.operations || []).find((o) => o.id === opId);
     if (!op) return false;
@@ -2296,7 +2307,7 @@ export default function CahierDeChai() {
     setLots((prev) => {
       const l = { ...prev[lotId] };
       l.operations = l.operations.map((o) => (o.id === opId
-        ? { ...o, volume: v, poidsKg: form.poidsKg ? Number(form.poidsKg) : null }
+        ? { ...o, date: form.date, volume: v, poidsKg: form.poidsKg ? Number(form.poidsKg) : null }
         : o));
 
       let composition = [];
@@ -2446,22 +2457,27 @@ export default function CahierDeChai() {
       if (!window.confirm(`Stock insuffisant (${dispo} ${prod.unite} disponibles). Enregistrer quand même ?`)) return false;
     }
 
+    const opId = uid('op');
+    const mouvementId = uid('mv');
+
     setProduits((prev) => ({
       ...prev,
       [produitId]: {
         ...prev[produitId],
         mouvements: [...(prev[produitId].mouvements || []), {
-          id: uid('mv'), sens: 'sortie', quantite: q, date,
+          id: mouvementId, sens: 'sortie', quantite: q, date,
           motif: `Lot ${lots[lotId] ? lots[lotId].code : ''}`, numeroLotFournisseur: numeroLotFournisseur || '',
+          lotId, opId,
         }],
       },
     }));
 
     ajouterOperation(lotId, {
-      type: 'ajout', date, produitId, produitNom: prod.nom, categorie: prod.categorie,
+      id: opId, type: 'ajout', date, produitId, produitNom: prod.nom, categorie: prod.categorie,
       quantite: q, unite: prod.unite, contenantId,
       numeroLotFournisseur: numeroLotFournisseur || '', dluo: dluo || '',
       manipType: manipType || null, notes: notes || '', auteur: user.id,
+      mouvementId,
     });
     return true;
   };
@@ -2537,6 +2553,27 @@ export default function CahierDeChai() {
       responsable: form.responsable || '', dateFiltration: form.dateFiltration || '',
       critere8515: form.critere8515 || '', notes: form.notes || '', auteur: user.id,
       saisieLe: new Date().toISOString(),
+    });
+    return true;
+  };
+
+  /* Corrige une manipulation déjà inscrite. La date de saisie d'origine
+     (saisieLe) est conservée : elle reflète quand l'inscription a réellement
+     eu lieu, pas quand une coquille y a été corrigée ensuite. */
+  const majManipulation = (lotId, opId, form) => {
+    if (!form.manipType) { alert('Choisis un type de manipulation'); return false; }
+    if (!form.date) { alert('Date obligatoire'); return false; }
+    setLots((prev) => {
+      const l = { ...prev[lotId] };
+      l.operations = l.operations.map((o) => (o.id === opId ? {
+        ...o, manipType: form.manipType, date: form.date, contenantId: form.contenantId,
+        produit: form.produit || '', quantiteProduit: form.quantiteProduit || '',
+        volumeConcerne: form.volumeConcerne || '', titreAvant: form.titreAvant || '', titreApres: form.titreApres || '',
+        designationAvant: form.designationAvant || '', designationApres: form.designationApres || '',
+        responsable: form.responsable || '', dateFiltration: form.dateFiltration || '',
+        critere8515: form.critere8515 || '', notes: form.notes || '',
+      } : o));
+      return { ...prev, [lotId]: l };
     });
     return true;
   };
@@ -2668,6 +2705,24 @@ export default function CahierDeChai() {
       alert("Cette opération a modifié des volumes : elle ne peut pas être supprimée sans casser la traçabilité. Enregistre une opération inverse à la place.");
       return;
     }
+
+    // Un ajout de produit peut être annulé : le stock consommé est restitué.
+    if (op.type === 'ajout') {
+      if (!window.confirm(`Supprimer cet ajout et restituer ${op.quantite} ${op.unite} au stock de « ${op.produitNom} » ?`)) return;
+      setLots((prev) => ({
+        ...prev,
+        [lotId]: { ...prev[lotId], operations: prev[lotId].operations.filter((o) => o.id !== opId) },
+      }));
+      if (op.mouvementId) {
+        setProduits((prev) => {
+          const prod = prev[op.produitId];
+          if (!prod) return prev;
+          return { ...prev, [op.produitId]: { ...prod, mouvements: (prod.mouvements || []).filter((m) => m.id !== op.mouvementId) } };
+        });
+      }
+      return;
+    }
+
     if (!window.confirm('Supprimer cette ligne du suivi ?')) return;
     setLots((prev) => ({
       ...prev,
@@ -2921,10 +2976,23 @@ export default function CahierDeChai() {
     const prod = produits[produitId];
     const m = (prod.mouvements || []).find((x) => x.id === mouvementId);
     if (!m) return;
+
     if (m.sens === 'sortie') {
-      alert("Cette sortie est liée à un ajout de produit sur une cuve : supprime plutôt l'opération correspondante depuis la fiche du lot, pour ne pas casser la traçabilité.");
+      if (!window.confirm(`Annuler cette sortie et restituer ${m.quantite} ${prod.unite} au stock ?`)) return;
+      setProduits((p) => ({
+        ...p,
+        [produitId]: { ...p[produitId], mouvements: p[produitId].mouvements.filter((x) => x.id !== mouvementId) },
+      }));
+      // Retire aussi l'ajout correspondant de la fiche du lot, pour rester cohérent.
+      if (m.lotId && m.opId && lots[m.lotId]) {
+        setLots((prev) => ({
+          ...prev,
+          [m.lotId]: { ...prev[m.lotId], operations: (prev[m.lotId].operations || []).filter((o) => o.id !== m.opId) },
+        }));
+      }
       return;
     }
+
     const cle = m.numeroLotFournisseur || '(sans n° de lot)';
     const infosLot = stockParLotFournisseur(prod).find((l) => l.numeroLot === cle);
     if (infosLot && infosLot.sorti > 0) {
@@ -3580,7 +3648,9 @@ export default function CahierDeChai() {
         return <ModalePerte lot={lots[payload.lotId]} contenants={contenants} onValider={enregistrerPerte} onFermer={fermer} />;
       case 'manipulation':
         return <ModaleManipulation lot={lots[payload.lotId]} contenants={contenants} typeInitial={payload.manipType}
-          onValider={enregistrerManipulation} onFermer={fermer} />;
+          manipulation={payload.manipulation}
+          onValider={payload.manipulation ? (f) => majManipulation(payload.lotId, payload.manipulation.id, f) : enregistrerManipulation}
+          onFermer={fermer} />;
       case 'mise':
         return <ModaleMise lot={lots[payload.lotId]} contenants={contenants} conditionnements={conditionnements}
           parcelles={parcelles} cepages={cepages} onValider={mettreEnBouteille} onFermer={fermer} />;
@@ -3997,7 +4067,10 @@ export default function CahierDeChai() {
                                 {o.type === 'apport' && (
                                   <button className="btn btn-ghost btn-sm" onClick={() => ouvrir('editApport', { lotId: lot.id, opId: o.id })}>Modifier</button>
                                 )}
-                                {['analyse', 'travail', 'manipulation', 'controle', 'perte'].includes(o.type) && (
+                                {o.type === 'manipulation' && (
+                                  <button className="btn btn-ghost btn-sm" onClick={() => ouvrir('manipulation', { lotId: lot.id, manipulation: o })}>Modifier</button>
+                                )}
+                                {['analyse', 'travail', 'manipulation', 'controle', 'perte', 'ajout'].includes(o.type) && (
                                   <button className="btn btn-ghost btn-sm supprimer-op" onClick={() => supprimerOperation(lot.id, o.id)}>✕</button>
                                 )}
                               </div>
@@ -4492,7 +4565,7 @@ export default function CahierDeChai() {
                     </div>
                     {manips.length === 0 ? <p className="muted">Aucune manipulation inscrite.</p> : (
                       <table className="data-table compact">
-                        <thead><tr><th>Date</th><th>Type</th><th>Produit</th><th>Quantité</th><th>Volume</th><th>Lot</th></tr></thead>
+                        <thead><tr><th>Date</th><th>Type</th><th>Produit</th><th>Quantité</th><th>Volume</th><th>Lot</th><th></th></tr></thead>
                         <tbody>
                           {manips.map((o) => (
                             <tr key={o.id}>
@@ -4502,6 +4575,7 @@ export default function CahierDeChai() {
                               <td className="small">{o.quantiteProduit || '—'}</td>
                               <td className="small">{o.volumeConcerne ? `${o.volumeConcerne} hL` : '—'}</td>
                               <td className="small">{o._lotCode}</td>
+                              <td><button className="btn btn-ghost btn-sm" onClick={() => ouvrir('manipulation', { lotId: o._lotId, manipulation: o })}>Modifier</button></td>
                             </tr>
                           ))}
                         </tbody>
@@ -4670,7 +4744,7 @@ export default function CahierDeChai() {
                       <h3 className="panel-title">{MANIP_TYPES[type].label} ({liste.length})</h3>
                       <p className="delai-hint">⏱ {MANIP_TYPES[type].delai}</p>
                       <table className="data-table compact">
-                        <thead><tr><th>Date</th><th>Lot</th><th>Contenant</th><th>Produit</th><th>Quantité</th><th>Volume</th><th>Détail</th></tr></thead>
+                        <thead><tr><th>Date</th><th>Lot</th><th>Contenant</th><th>Produit</th><th>Quantité</th><th>Volume</th><th>Détail</th><th></th></tr></thead>
                         <tbody>
                           {liste.sort((a, b) => b.date.localeCompare(a.date)).map((o) => (
                             <tr key={o.id}>
@@ -4685,6 +4759,7 @@ export default function CahierDeChai() {
                                 {o.critere8515 ? `85/15 : ${o.critere8515}` : ''}
                                 {o.responsable ? `${o.responsable}` : ''}
                               </td>
+                              <td><button className="btn btn-ghost btn-sm" onClick={() => ouvrir('manipulation', { lotId: o._lot.id, manipulation: o })}>Modifier</button></td>
                             </tr>
                           ))}
                         </tbody>
