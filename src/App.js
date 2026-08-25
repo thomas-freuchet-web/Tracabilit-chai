@@ -1995,7 +1995,6 @@ export default function CahierDeChai() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session ? { id: session.user.email, uid: session.user.id } : null);
     });
-    // eslint-disable-next-line no-unreachable
     return () => subscription.unsubscribe();
   }, []);
 
@@ -4714,7 +4713,7 @@ export default function CahierDeChai() {
                   <h3 className="panel-title">Entrées de vendange ({apportsFiltres.length})</h3>
                   {apportsFiltres.length === 0 ? <p className="muted">Aucun apport.</p> : (
                     <table className="data-table compact">
-                      <thead><tr><th>Date</th><th>Parcelle</th><th>Cépage</th><th>Appellation</th><th>Contenant</th><th>Volume</th><th>Poids</th></tr></thead>
+                      <thead><tr><th>Date</th><th>Lot</th><th>Parcelle</th><th>Cépage</th><th>Appellation</th><th>Contenant</th><th>Volume</th><th>Poids</th><th></th></tr></thead>
                       <tbody>
                         {apportsFiltres.sort((a, b) => b.date.localeCompare(a.date)).map((o) => {
                           const p = parcelles[o.parcelleId];
@@ -4722,12 +4721,14 @@ export default function CahierDeChai() {
                           return (
                             <tr key={o.id}>
                               <td className="nowrap">{o.date}</td>
+                              <td><button className="lien" onClick={() => ouvrirLot(o._lot.id)}>{o._lot.code}</button></td>
                               <td>{p ? p.nom : '—'}{p && p.cadastre ? <div className="muted small">{p.cadastre}</div> : null}</td>
                               <td className="small">{cep ? <><ColorDot couleur={cep.couleur} />{cep.nom}</> : '—'}</td>
                               <td className="small">{p ? p.appellation || '—' : '—'}</td>
                               <td className="small">{nomContenant(o.contenantId)}</td>
                               <td>{o.volume} hL</td>
                               <td className="small">{o.poidsKg ? `${o.poidsKg} kg` : '—'}</td>
+                              <td><button className="btn btn-ghost btn-sm" onClick={() => ouvrir('editApport', { lotId: o._lot.id, opId: o.id })}>Modifier</button></td>
                             </tr>
                           );
                         })}
