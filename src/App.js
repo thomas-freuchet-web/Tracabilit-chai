@@ -4770,31 +4770,49 @@ export default function CahierDeChai() {
                       <h3 className="panel-title">Historique complet, lots d'origine inclus</h3>
                       <p className="muted small">C'est ce que tu dois pouvoir présenter en cas de contrôle : tout ce qu'a reçu ce vin depuis la vigne.</p>
                       <table className="data-table compact">
-                        <thead><tr><th>Date</th><th>Lot</th><th>Opération</th><th>Détail</th><th>Contenant</th></tr></thead>
+                        <thead><tr><th>Date</th><th>Lot</th><th>Opération</th><th>Détail</th><th>Contenant</th><th></th><th></th></tr></thead>
                         <tbody>
-                          {opsCompletes.map((o) => (
-                            <tr key={o.id}>
-                              <td className="nowrap">{o.date}</td>
-                              <td className="small">{o._lotCode}</td>
-                              <td><span className={`op-tag op-${o.type}`}>{o.type}</span></td>
-                              <td className="small">
-                                {o.type === 'apport' && `${nomParcelle(o.parcelleId)} — ${o.volume} hL`}
-                                {o.type === 'ajout' && `${o.produitNom} — ${o.quantite} ${o.unite}${o.numeroLotFournisseur ? ` (lot ${o.numeroLotFournisseur})` : ''}`}
-                                {o.type === 'analyse' && Object.keys(o.valeurs || {}).map((k) => {
-                                  const p = PARAMS_ANALYSE.find((x) => x.id === k);
-                                  return `${p ? p.label : k} ${o.valeurs[k]}`;
-                                }).join(' · ')}
-                                {o.type === 'travail' && o.action}
-                                {o.type === 'controle' && `${o.moment === 'matin' ? 'Matin' : o.moment === 'soir' ? 'Soir' : 'Contrôle'} — ${o.temperature !== null && o.temperature !== undefined ? o.temperature + ' °C' : '—'} · densité ${o.densite !== null && o.densite !== undefined ? o.densite : '—'}`}
-                                {['transfert', 'reception', 'origine', 'deplacement'].includes(o.type) && `${o.motif} ${o.volume} hL → ${nomContenant(o.contenantDestId)}`}
-                                {o.type === 'perte' && `${o.motif} — ${o.volume} hL${o.poidsKg ? ` · ${o.poidsKg} kg` : ''}`}
-                                {o.type === 'manipulation' && `${MANIP_TYPES[o.manipType].label}${o.produit ? ` — ${o.produit}` : ''}`}
-                                {o.type === 'mise' && `Lot ${o.numeroLot} — ${o.volume} hL`}
-                                {o.type === 'phase' && o.notes}
-                              </td>
-                              <td className="small">{nomContenant(o.contenantId || o.contenantSourceId)}</td>
-                            </tr>
-                          ))}
+                          {opsCompletes.map((o) => {
+                            const ouvrirEdition = {
+                              apport: () => ouvrir('editApport', { lotId: o._lotId, opId: o.id }),
+                              manipulation: () => ouvrir('manipulation', { lotId: o._lotId, manipulation: o }),
+                              controle: () => ouvrir('controle', { lotId: o._lotId, controle: o }),
+                              analyse: () => ouvrir('analyse', { lotId: o._lotId, analyse: o }),
+                              travail: () => ouvrir('travail', { lotId: o._lotId, travail: o }),
+                              perte: () => ouvrir('perte', { lotId: o._lotId, perte: o }),
+                              ajout: () => ouvrir('ajoutProduit', { lotId: o._lotId, ajout: o }),
+                              transfert: () => ouvrir('editMouvement', { lotId: o._lotId, op: o }),
+                              reception: () => ouvrir('editMouvement', { lotId: o._lotId, op: o }),
+                              origine: () => ouvrir('editMouvement', { lotId: o._lotId, op: o }),
+                              deplacement: () => ouvrir('editMouvement', { lotId: o._lotId, op: o }),
+                            }[o.type];
+                            const peutSupprimer = ['analyse', 'travail', 'manipulation', 'controle', 'perte', 'ajout', 'apport', 'deplacement', 'phase', 'mise'].includes(o.type);
+                            return (
+                              <tr key={o.id}>
+                                <td className="nowrap">{o.date}</td>
+                                <td className="small">{o._lotCode}</td>
+                                <td><span className={`op-tag op-${o.type}`}>{o.type}</span></td>
+                                <td className="small">
+                                  {o.type === 'apport' && `${nomParcelle(o.parcelleId)} — ${o.volume} hL`}
+                                  {o.type === 'ajout' && `${o.produitNom} — ${o.quantite} ${o.unite}${o.numeroLotFournisseur ? ` (lot ${o.numeroLotFournisseur})` : ''}`}
+                                  {o.type === 'analyse' && Object.keys(o.valeurs || {}).map((k) => {
+                                    const p = PARAMS_ANALYSE.find((x) => x.id === k);
+                                    return `${p ? p.label : k} ${o.valeurs[k]}`;
+                                  }).join(' · ')}
+                                  {o.type === 'travail' && o.action}
+                                  {o.type === 'controle' && `${o.moment === 'matin' ? 'Matin' : o.moment === 'soir' ? 'Soir' : 'Contrôle'} — ${o.temperature !== null && o.temperature !== undefined ? o.temperature + ' °C' : '—'} · densité ${o.densite !== null && o.densite !== undefined ? o.densite : '—'}`}
+                                  {['transfert', 'reception', 'origine', 'deplacement'].includes(o.type) && `${o.motif} ${o.volume} hL → ${nomContenant(o.contenantDestId)}`}
+                                  {o.type === 'perte' && `${o.motif} — ${o.volume} hL${o.poidsKg ? ` · ${o.poidsKg} kg` : ''}`}
+                                  {o.type === 'manipulation' && `${MANIP_TYPES[o.manipType].label}${o.produit ? ` — ${o.produit}` : ''}`}
+                                  {o.type === 'mise' && `Lot ${o.numeroLot} — ${o.volume} hL`}
+                                  {o.type === 'phase' && o.notes}
+                                </td>
+                                <td className="small">{nomContenant(o.contenantId || o.contenantSourceId)}</td>
+                                <td>{ouvrirEdition && <button className="btn btn-ghost btn-sm" title="Modifier" onClick={ouvrirEdition}>✏️</button>}</td>
+                                <td>{peutSupprimer && <button className="btn btn-ghost btn-sm" title="Supprimer" onClick={() => supprimerOperation(o._lotId, o.id)}>✕</button>}</td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -4810,7 +4828,7 @@ export default function CahierDeChai() {
                     <p className="muted small">Lots d'origine inclus — c'est la liste complète des intrants du vin actuellement dans ce lot.</p>
                     {intrants.length === 0 ? <p className="muted">Aucun produit ajouté.</p> : (
                       <table className="data-table compact">
-                        <thead><tr><th>Date</th><th>Produit</th><th>Catégorie</th><th>Quantité</th><th>N° lot fournisseur</th><th>DLUO</th><th>Lot</th></tr></thead>
+                        <thead><tr><th>Date</th><th>Produit</th><th>Catégorie</th><th>Quantité</th><th>N° lot fournisseur</th><th>DLUO</th><th>Lot</th><th></th><th></th></tr></thead>
                         <tbody>
                           {intrants.map((o) => (
                             <tr key={o.id}>
@@ -4821,6 +4839,8 @@ export default function CahierDeChai() {
                               <td className="small">{o.numeroLotFournisseur || '—'}</td>
                               <td className="small">{o.dluo || '—'}</td>
                               <td className="small">{o._lotCode}</td>
+                              <td><button className="btn btn-ghost btn-sm" title="Modifier" onClick={() => ouvrir('ajoutProduit', { lotId: o._lotId, ajout: o })}>✏️</button></td>
+                              <td><button className="btn btn-ghost btn-sm" title="Supprimer" onClick={() => supprimerOperation(o._lotId, o.id)}>✕</button></td>
                             </tr>
                           ))}
                         </tbody>
