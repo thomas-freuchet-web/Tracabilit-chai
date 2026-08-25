@@ -2813,6 +2813,7 @@ export default function CahierDeChai() {
       l.operations = [...(l.operations || []), {
         id: uid('op'), type: 'mise', date: form.date, volume: volumeHl,
         contenantId: form.contenantId, numeroLot: form.numeroLot, auteur: user.id,
+        conditionnementId: cond.id,
       }];
       if (volumeLot(l) <= 0.001) { l.phase = 'conditionne'; l.statut = 'archive'; }
       return { ...prev, [form.lotId]: l };
@@ -2926,8 +2927,66 @@ export default function CahierDeChai() {
       return;
     }
 
-    if (['transfert', 'reception', 'origine', 'deplacement', 'mise'].includes(op.type)) {
-      alert("Cette opération a modifié des volumes : elle ne peut pas être supprimée sans casser la traçabilité. Enregistre une opération inverse à la place.");
+    // Un déplacement interne (entre deux contenants du MÊME lot) peut être
+    // annulé sans risque : ça ne touche jamais la composition.
+    if (op.type === 'deplacement') {
+      const ligneDest = (lot.contenants || []).find((c) => c.contenantId === op.contenantDestId);
+      if (!ligneDest || ligneDest.volume < op.volume - 0.001) {
+        alert("Impossible d'annuler ce déplacement : le volume déplacé n'est plus disponible dans le contenant de destination (des mouvements ont eu lieu depuis).");
+        return;
+      }
+      if (!window.confirm(`Annuler ce déplacement et remettre ${op.volume} hL dans ${nomContenant(op.contenantSourceId)} ?`)) return;
+      setLots((prev) => {
+        const l = { ...prev[lotId] };
+        l.operations = l.operations.filter((o) => o.id !== opId);
+        l.contenants = l.contenants
+          .map((c) => (c.contenantId === op.contenantDestId ? { ...c, volume: round2(c.volume - op.volume) } : c))
+          .filter((c) => c.volume > 0.001);
+        const dejaPresent = l.contenants.some((c) => c.contenantId === op.contenantSourceId);
+        l.contenants = dejaPresent
+          ? l.contenants.map((c) => (c.contenantId === op.contenantSourceId ? { ...c, volume: round2(c.volume + op.volume) } : c))
+          : [...l.contenants, { contenantId: op.contenantSourceId, volume: op.volume }];
+        return { ...prev, [lotId]: l };
+      });
+      return;
+    }
+
+    // Un changement de phase n'est qu'un repère dans le suivi : le retirer
+    // ne modifie pas la phase actuelle du lot (utilise les boutons "Fin de
+    // fermentation" / "Retour en vinification" pour ça).
+    if (op.type === 'phase') {
+      if (!window.confirm('Supprimer cette ligne de changement de phase ? La phase actuelle du lot ne sera pas modifiée.')) return;
+      setLots((prev) => ({
+        ...prev,
+        [lotId]: { ...prev[lotId], operations: prev[lotId].operations.filter((o) => o.id !== opId) },
+      }));
+      return;
+    }
+
+    // Une mise en bouteille peut être annulée : le volume est restitué au
+    // contenant et l'enregistrement de conditionnement correspondant est
+    // retiré (sauf s'il a été créé avant l'ajout de ce lien, auquel cas il
+    // faut le retirer manuellement depuis "Mise en bouteille").
+    if (op.type === 'mise') {
+      if (!window.confirm(`Annuler cette mise en bouteille et restituer ${op.volume} hL au lot ?${!op.conditionnementId ? "\n\n(la ligne dans « Mise en bouteille » devra être retirée manuellement)" : ''}`)) return;
+      setLots((prev) => {
+        const l = { ...prev[lotId] };
+        const dejaPresent = (l.contenants || []).some((c) => c.contenantId === op.contenantId);
+        l.contenants = dejaPresent
+          ? l.contenants.map((c) => (c.contenantId === op.contenantId ? { ...c, volume: round2(c.volume + op.volume) } : c))
+          : [...(l.contenants || []), { contenantId: op.contenantId, volume: op.volume }];
+        l.operations = l.operations.filter((o) => o.id !== opId);
+        if (volumeLot(l) > 0.001) { l.statut = 'actif'; if (l.phase === 'conditionne') l.phase = 'elevage'; }
+        return { ...prev, [lotId]: l };
+      });
+      if (op.conditionnementId) {
+        setConditionnements((prev) => prev.filter((c) => c.id !== op.conditionnementId));
+      }
+      return;
+    }
+
+    if (['transfert', 'reception', 'origine'].includes(op.type)) {
+      alert("Ce mouvement a mélangé le contenu de deux lots : il ne peut pas être supprimé sans risquer de fausser leur composition respective. Enregistre un nouveau Transfert ou une Sortie de volume pour corriger un écart.");
       return;
     }
 
@@ -4320,7 +4379,7 @@ export default function CahierDeChai() {
                                 {['transfert', 'reception', 'origine', 'deplacement'].includes(o.type) && (
                                   <button className="btn btn-ghost btn-sm" onClick={() => ouvrir('editMouvement', { lotId: lot.id, op: o })}>Modifier</button>
                                 )}
-                                {['analyse', 'travail', 'manipulation', 'controle', 'perte', 'ajout', 'apport'].includes(o.type) && (
+                                {['analyse', 'travail', 'manipulation', 'controle', 'perte', 'ajout', 'apport', 'deplacement', 'phase', 'mise'].includes(o.type) && (
                                   <button className="btn btn-ghost btn-sm supprimer-op" onClick={() => supprimerOperation(lot.id, o.id)}>✕</button>
                                 )}
                               </div>
