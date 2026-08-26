@@ -2152,6 +2152,7 @@ export default function CahierDeChai() {
   const [ongletLot, setOngletLot] = useState('suivi');
   const [paramsGraphe, setParamsGraphe] = useState(['densite', 'temperature']);
   const [recherche, setRecherche] = useState('');
+  const [triEntreesVendange, setTriEntreesVendange] = useState('date'); // date | parcelle
 
   /* ---------- Modales ---------- */
   const [modale, setModale] = useState(null); // {type, payload}
@@ -5063,12 +5064,18 @@ export default function CahierDeChai() {
                 )}
 
                 <div className="panel">
-                  <h3 className="panel-title">Entrées de vendange ({apportsFiltres.length})</h3>
-                  {apportsFiltres.length === 0 ? <p className="muted">Aucun apport.</p> : (
+                  <div className="panel-head">
+                    <h3 className="panel-title">Entrées de vendange ({apportsFiltres.length})</h3>
+                    <div className="toggle">
+                      <button className={triEntreesVendange === 'date' ? 'active' : ''} onClick={() => setTriEntreesVendange('date')}>Par date</button>
+                      <button className={triEntreesVendange === 'parcelle' ? 'active' : ''} onClick={() => setTriEntreesVendange('parcelle')}>Par parcelle</button>
+                    </div>
+                  </div>
+                  {apportsFiltres.length === 0 ? <p className="muted">Aucun apport.</p> : triEntreesVendange === 'date' ? (
                     <table className="data-table compact">
                       <thead><tr><th>Date</th><th>Lot</th><th>Parcelle</th><th>Cépage</th><th>Appellation</th><th>Contenant</th><th>Volume</th><th>Poids</th><th></th><th></th></tr></thead>
                       <tbody>
-                        {apportsFiltres.sort((a, b) => b.date.localeCompare(a.date)).map((o) => {
+                        {[...apportsFiltres].sort((a, b) => b.date.localeCompare(a.date)).map((o) => {
                           const p = parcelles[o.parcelleId];
                           const cep = p ? cepages[p.cepageId] : null;
                           return (
@@ -5088,7 +5095,49 @@ export default function CahierDeChai() {
                         })}
                       </tbody>
                     </table>
-                  )}
+                  ) : (() => {
+                    const groupes = {};
+                    apportsFiltres.forEach((o) => {
+                      const cle = o.parcelleId || '?';
+                      if (!groupes[cle]) groupes[cle] = { parcelle: parcelles[o.parcelleId], apports: [] };
+                      groupes[cle].apports.push(o);
+                    });
+                    const listeGroupes = Object.values(groupes).sort((a, b) =>
+                      (a.parcelle ? a.parcelle.nom : '~').localeCompare(b.parcelle ? b.parcelle.nom : '~', undefined, { numeric: true }));
+                    return listeGroupes.map((g, i) => {
+                      const cep = g.parcelle ? cepages[g.parcelle.cepageId] : null;
+                      const totalVolume = round2(g.apports.reduce((s, o) => s + (Number(o.volume) || 0), 0));
+                      const totalPoids = round2(g.apports.reduce((s, o) => s + (Number(o.poidsKg) || 0), 0));
+                      return (
+                        <section className="lieu-section" key={g.parcelle ? g.parcelle.id : `sans-parcelle-${i}`}>
+                          <h4 className="lieu-titre">
+                            {cep ? <ColorDot couleur={cep.couleur} /> : null}
+                            {g.parcelle ? g.parcelle.nom : 'Parcelle supprimée'}
+                            <span className="muted small">
+                              {' '}· {cep ? cep.nom : '?'}{g.parcelle && g.parcelle.appellation ? ` · ${g.parcelle.appellation}` : ''}
+                              {' '}· {g.apports.length} apport{g.apports.length > 1 ? 's' : ''} · {totalVolume} hL{totalPoids > 0 ? ` · ${totalPoids} kg` : ''}
+                            </span>
+                          </h4>
+                          <table className="data-table compact">
+                            <thead><tr><th>Date</th><th>Lot</th><th>Contenant</th><th>Volume</th><th>Poids</th><th></th><th></th></tr></thead>
+                            <tbody>
+                              {[...g.apports].sort((a, b) => b.date.localeCompare(a.date)).map((o) => (
+                                <tr key={o.id}>
+                                  <td className="nowrap">{o.date}</td>
+                                  <td><button className="lien" onClick={() => ouvrirLot(o._lot.id)}>{o._lot.code}</button></td>
+                                  <td className="small">{nomContenant(o.contenantId)}</td>
+                                  <td>{o.volume} hL</td>
+                                  <td className="small">{o.poidsKg ? `${o.poidsKg} kg` : '—'}</td>
+                                  <td><button className="btn btn-ghost btn-sm" onClick={() => ouvrir('editApport', { lotId: o._lot.id, opId: o.id })}>Modifier</button></td>
+                                  <td><button className="btn btn-ghost btn-sm" onClick={() => supprimerOperation(o._lot.id, o.id)}>✕</button></td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </section>
+                      );
+                    });
+                  })()}
                 </div>
 
                 {Object.keys(MANIP_TYPES).map((type) => {
