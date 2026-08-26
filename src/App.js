@@ -1794,7 +1794,7 @@ function ModaleProduit({ produit, onValider, onFermer }) {
   );
 }
 
-function ModaleProduitDetail({ produit, onEntree, onModifier, onSupprimerMouvement, onFermer }) {
+function ModaleProduitDetail({ produit, onEntree, onModifier, onModifierMouvement, onSupprimerMouvement, onFermer }) {
   const lotsF = stockParLotFournisseur(produit);
   const mvts = [...(produit.mouvements || [])].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   return (
@@ -1836,7 +1836,7 @@ function ModaleProduitDetail({ produit, onEntree, onModifier, onSupprimerMouveme
       <h4 style={{ marginTop: 22 }}>Historique des mouvements ({mvts.length})</h4>
       {mvts.length === 0 ? <p className="muted">Aucun mouvement.</p> : (
         <table className="data-table compact">
-          <thead><tr><th>Date</th><th>Sens</th><th>Quantité</th><th>N° de lot</th><th>Motif</th><th></th></tr></thead>
+          <thead><tr><th>Date</th><th>Sens</th><th>Quantité</th><th>N° de lot</th><th>Motif</th><th></th><th></th></tr></thead>
           <tbody>
             {mvts.map((m) => (
               <tr key={m.id}>
@@ -1848,7 +1848,12 @@ function ModaleProduitDetail({ produit, onEntree, onModifier, onSupprimerMouveme
                 <td className="small">{m.numeroLotFournisseur || '—'}</td>
                 <td className="small">{m.motif || '—'}</td>
                 <td>
-                  <button className="btn btn-ghost btn-sm" onClick={() => onSupprimerMouvement(m.id)}>✕</button>
+                  {(m.sens === 'entree' || (m.lotId && m.opId)) && (
+                    <button className="btn btn-ghost btn-sm" title="Modifier" onClick={() => onModifierMouvement(m)}>✏️</button>
+                  )}
+                </td>
+                <td>
+                  <button className="btn btn-ghost btn-sm" title="Supprimer" onClick={() => onSupprimerMouvement(m.id)}>✕</button>
                 </td>
               </tr>
             ))}
@@ -1863,14 +1868,18 @@ function ModaleProduitDetail({ produit, onEntree, onModifier, onSupprimerMouveme
   );
 }
 
-function ModaleEntreeStock({ produit, onValider, onFermer }) {
-  const [f, setF] = useState({
+function ModaleEntreeStock({ produit, onValider, onFermer, mouvement }) {
+  const [f, setF] = useState(mouvement ? {
+    produitId: produit.id, quantite: String(mouvement.quantite), date: mouvement.date,
+    numeroLotFournisseur: mouvement.numeroLotFournisseur || '', dluo: mouvement.dluo || '',
+    fournisseur: mouvement.fournisseur || produit.fournisseur || '',
+  } : {
     produitId: produit.id, quantite: '', date: today(),
     numeroLotFournisseur: '', dluo: '', fournisseur: produit.fournisseur || '',
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   return (
-    <Modal title="Entrée en stock" subtitle={`${produit.nom} — stock actuel ${stockProduit(produit)} ${produit.unite}`} onClose={onFermer}>
+    <Modal title={mouvement ? 'Modifier cette entrée' : 'Entrée en stock'} subtitle={`${produit.nom} — stock actuel ${stockProduit(produit)} ${produit.unite}`} onClose={onFermer}>
       <div className="field-grid">
         <Field label="Date de réception"><input type="date" value={f.date} onChange={(e) => set('date', e.target.value)} /></Field>
         <Field label={`Quantité reçue (${produit.unite})`}><input type="number" step="0.01" value={f.quantite} onChange={(e) => set('quantite', e.target.value)} /></Field>
@@ -3306,6 +3315,21 @@ export default function CahierDeChai() {
     }));
     return true;
   };
+  const majEntreeStock = (produitId, mouvementId, f) => {
+    const q = Number(f.quantite);
+    if (!q || q <= 0) { alert('Quantité invalide'); return false; }
+    setProduits((p) => ({
+      ...p,
+      [produitId]: {
+        ...p[produitId],
+        mouvements: p[produitId].mouvements.map((m) => (m.id === mouvementId ? {
+          ...m, quantite: q, date: f.date, numeroLotFournisseur: f.numeroLotFournisseur || '',
+          dluo: f.dluo || '', fournisseur: f.fournisseur || '',
+        } : m)),
+      },
+    }));
+    return true;
+  };
   const importerProduitsIA = (lignes) => {
     const nouveauxProduits = {};
     const mouvementsParProduit = {};
@@ -3990,13 +4014,24 @@ export default function CahierDeChai() {
       case 'produit':
         return <ModaleProduit produit={payload.produit} onValider={payload.produit ? (f) => majProduit(payload.produit.id, f) : ajouterProduit} onFermer={fermer} />;
       case 'entreeStock':
-        return <ModaleEntreeStock produit={produits[payload.produitId]} onValider={entrerStock} onFermer={fermer} />;
+        return <ModaleEntreeStock produit={produits[payload.produitId]} mouvement={payload.mouvement}
+          onValider={payload.mouvement ? (f) => majEntreeStock(payload.produitId, payload.mouvement.id, f) : entrerStock} onFermer={fermer} />;
       case 'importBonLivraison':
         return <ModaleImportBonLivraison produits={produits} onImporter={importerProduitsIA} onFermer={fermer} />;
       case 'produitDetail':
         return <ModaleProduitDetail produit={produits[payload.produitId]}
           onEntree={() => ouvrir('entreeStock', { produitId: payload.produitId })}
           onModifier={() => ouvrir('produit', { produit: produits[payload.produitId] })}
+          onModifierMouvement={(m) => {
+            if (m.sens === 'entree') {
+              ouvrir('entreeStock', { produitId: payload.produitId, mouvement: m });
+              return;
+            }
+            const lotAssocie = m.lotId ? lots[m.lotId] : null;
+            const opAssociee = lotAssocie ? (lotAssocie.operations || []).find((o) => o.id === m.opId) : null;
+            if (opAssociee) ouvrir('ajoutProduit', { lotId: m.lotId, ajout: opAssociee });
+            else alert("L'ajout correspondant sur la cuve est introuvable : cette sortie ne peut plus être modifiée, seulement supprimée.");
+          }}
           onSupprimerMouvement={(mid) => supprimerMouvementProduit(payload.produitId, mid)}
           onFermer={fermer} />;
       default:
