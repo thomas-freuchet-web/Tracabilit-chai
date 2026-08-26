@@ -1004,7 +1004,12 @@ function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer, analyse }
         Object.entries(data.valeurs || {}).forEach(([k, v]) => {
           if (v !== null && v !== undefined && v !== '') nouvellesValeurs[k] = String(v);
         });
-        return { ...p, valeurs: nouvellesValeurs, source: 'labo', date: data.date || p.date };
+        const noteIA = (data.notes || '').trim();
+        const notes = !noteIA ? p.notes
+          : !p.notes ? noteIA
+          : p.notes.includes(noteIA) ? p.notes
+          : `${p.notes}\n${noteIA}`;
+        return { ...p, valeurs: nouvellesValeurs, source: 'labo', date: data.date || p.date, notes };
       });
 
       // Joint aussi le fichier comme bulletin archivé, pour éviter de le réimporter.
@@ -4773,6 +4778,12 @@ export default function CahierDeChai() {
                                     <td className="col-fixe"><strong>Contenant</strong></td>
                                     {tri.map((o) => <td key={o.id} className="small">{nomContenant(o.contenantId)}</td>)}
                                   </tr>
+                                  {tri.some((o) => o.notes) && (
+                                    <tr>
+                                      <td className="col-fixe"><strong>Notes</strong></td>
+                                      {tri.map((o) => <td key={o.id} className="small" style={{ whiteSpace: 'pre-line' }}>{o.notes || '—'}</td>)}
+                                    </tr>
+                                  )}
                                   <tr>
                                     <td className="col-fixe"></td>
                                     {tri.map((o) => (

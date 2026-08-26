@@ -33,9 +33,11 @@ const PROMPT = `Tu analyses un bulletin d'analyse de laboratoire œnologique (ph
     "so2t": nombre en mg/L (SO2 total) ou null,
     "sucres": nombre en g/L (sucres réducteurs) ou null,
     "malique": nombre en g/L (acide malique) ou null
-  }
+  },
+  "notes": "string, vide si absent"
 }
-N'invente aucune valeur non présente sur le bulletin — mets null pour tout paramètre absent ou illisible plutôt que de deviner. Convertis les unités si besoin (ex. l'acidité est parfois donnée en g/L d'acide tartrique ou d'acide sulfurique : convertis en équivalent H2SO4 si l'unité d'origine est précisée, sinon laisse la valeur telle quelle et ne la convertis pas si tu n'es pas sûr).`;
+N'invente aucune valeur non présente sur le bulletin — mets null pour tout paramètre absent ou illisible plutôt que de deviner. Convertis les unités si besoin (ex. l'acidité est parfois donnée en g/L d'acide tartrique ou d'acide sulfurique : convertis en équivalent H2SO4 si l'unité d'origine est précisée, sinon laisse la valeur telle quelle et ne la convertis pas si tu n'es pas sûr).
+Pour "notes" : reprends fidèlement les remarques, annotations, appréciations ou commentaires écrits par le laboratoire (souvent en bas du bulletin, parfois manuscrits) — par exemple un avis sur la stabilité du vin, un risque de déviation, une recommandation de traitement. Ignore les mentions purement administratives (numéro de bulletin, date d'édition, coordonnées du labo, mode opératoire des analyses). Laisse "" si le bulletin n'a aucune remarque de ce type.`;
 
 function reponseJson(corps: unknown, status = 200) {
   return new Response(JSON.stringify(corps), {
