@@ -3493,6 +3493,28 @@ export default function CahierDeChai() {
   const nomLieu = (id) => (lieux[id] ? lieux[id].nom : '—');
   const nomParcelle = (id) => (parcelles[id] ? parcelles[id].nom : '—');
 
+  // Supprime tous les lots (et leur historique) et les mises en bouteille,
+  // remet le stock des produits à zéro, en conservant le référentiel
+  // (domaine, lieux, contenants, cépages, parcelles, fiches produits).
+  // Gardé de façon permanente à la demande explicite de l'utilisateur —
+  // double confirmation avant exécution vu le caractère irréversible.
+  const reinitialiserActivite = () => {
+    const conf1 = window.confirm(
+      "Supprimer TOUS les lots (et tout leur historique : apports, analyses, relevés, registre...), toutes les mises en bouteille, et remettre le stock de tous les produits à zéro ?\n\n" +
+      "Sont conservés : domaine, lieux, cuveries, contenants, cépages, parcelles, et la liste des produits (juste leur stock est vidé).\n\n" +
+      "Cette action est IRRÉVERSIBLE et s'applique à tous tes appareils."
+    );
+    if (!conf1) return;
+    const conf2 = window.confirm('Dernière confirmation : cette suppression ne peut pas être annulée. Continuer ?');
+    if (!conf2) return;
+
+    setLots({});
+    setConditionnements([]);
+    setProduits((prev) => Object.fromEntries(Object.entries(prev).map(([id, p]) => [id, { ...p, mouvements: [] }])));
+    setLotOuvert(null);
+    alert('Fait : lots, mises et stocks ont été réinitialisés.');
+  };
+
   const exporterExcel = () => {
     const wb = XLSX.utils.book_new();
 
@@ -5438,6 +5460,12 @@ export default function CahierDeChai() {
                 </div>
                 <p className="muted small">
                   Les données sont synchronisées automatiquement entre tous tes appareils. Exporte régulièrement une copie Excel pour garder une sauvegarde indépendante.
+                </p>
+                <div className="quick-row" style={{ marginTop: 14 }}>
+                  <button className="btn btn-danger" onClick={reinitialiserActivite}>🗑️ Réinitialiser lots, mises et stocks</button>
+                </div>
+                <p className="muted small">
+                  Supprime tous les lots et mises en bouteille, remet le stock des produits à zéro. Le référentiel (lieux, contenants, cépages, parcelles, fiches produits) est conservé. Irréversible — double confirmation demandée.
                 </p>
               </div>
             </>
