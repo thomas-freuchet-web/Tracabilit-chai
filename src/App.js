@@ -967,8 +967,58 @@ function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer, analyse }
     source: 'interne', valeurs: {}, notes: '', bulletins: [],
   });
   const [chargement, setChargement] = useState(false);
+  const [fichierIA, setFichierIA] = useState(null);
+  const [chargementIA, setChargementIA] = useState(false);
+  const [erreurIA, setErreurIA] = useState('');
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const setVal = (id, v) => setF((p) => ({ ...p, valeurs: { ...p.valeurs, [id]: v } }));
+
+  const lireAvecIA = async () => {
+    if (!fichierIA) { alert('Choisis un bulletin (PDF ou photo)'); return; }
+    setChargementIA(true); setErreurIA('');
+    try {
+      const base64 = await fichierEnBase64(fichierIA);
+      const { data, error } = await supabase.functions.invoke('extraire-bulletin-analyse', {
+        body: { fichierBase64: base64, mimeType: fichierIA.type },
+      });
+      if (error) {
+        let detail = error.message;
+        let statut = null;
+        if (error.context) {
+          statut = error.context.status;
+          if (typeof error.context.json === 'function') {
+            try {
+              const corps = await error.context.json();
+              if (corps && (corps.error || corps.message)) detail = corps.error || corps.message;
+            } catch { /* corps non-JSON, on garde le message générique */ }
+          }
+        }
+        // eslint-disable-next-line no-console
+        console.error('Erreur lecture IA du bulletin :', { statut, detail, error });
+        throw new Error(statut ? `${detail} (HTTP ${statut})` : detail);
+      }
+      if (data && data.error) throw new Error(data.error);
+
+      setF((p) => {
+        const nouvellesValeurs = { ...p.valeurs };
+        Object.entries(data.valeurs || {}).forEach(([k, v]) => {
+          if (v !== null && v !== undefined && v !== '') nouvellesValeurs[k] = String(v);
+        });
+        return { ...p, valeurs: nouvellesValeurs, source: 'labo', date: data.date || p.date };
+      });
+
+      // Joint aussi le fichier comme bulletin archivé, pour éviter de le réimporter.
+      try {
+        const meta = await uploaderBulletin(userId, fichierIA);
+        setF((p) => ({ ...p, bulletins: [...p.bulletins, meta] }));
+      } catch { /* l'extraction a réussi malgré tout ; le bulletin pourra être joint manuellement */ }
+
+      setFichierIA(null);
+    } catch (e) {
+      setErreurIA("Impossible d'analyser le bulletin : " + (e && e.message ? e.message : 'erreur inconnue'));
+    }
+    setChargementIA(false);
+  };
 
   const importer = async (e) => {
     const fichiers = [...e.target.files];
@@ -1019,6 +1069,16 @@ function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer, analyse }
           </select>
         </Field>
       </div>
+
+      <Field label="Lire un bulletin avec l'IA" hint="Remplit automatiquement les valeurs ci-dessous à partir d'une photo ou d'un PDF — vérifie avant d'enregistrer, le bulletin est aussi joint automatiquement.">
+        <div className="quick-row">
+          <input type="file" accept="application/pdf,image/*" onChange={(e) => setFichierIA(e.target.files[0])} disabled={chargementIA} />
+          <button className="btn btn-outline btn-sm" onClick={lireAvecIA} disabled={chargementIA || !fichierIA}>
+            {chargementIA ? 'Lecture en cours…' : "🤖 Lire avec l'IA"}
+          </button>
+        </div>
+      </Field>
+      {erreurIA && <p className="inline-note warn">{erreurIA}</p>}
 
       <div className="analyse-grid">
         {PARAMS_ANALYSE.map((p) => (
@@ -3433,28 +3493,6 @@ export default function CahierDeChai() {
   const nomLieu = (id) => (lieux[id] ? lieux[id].nom : '—');
   const nomParcelle = (id) => (parcelles[id] ? parcelles[id].nom : '—');
 
-  // TEMP RESET UNIQUE — supprime tous les lots (et leur historique) et les
-  // mises en bouteille, remet le stock des produits à zéro, en conservant le
-  // référentiel (domaine, lieux, contenants, cépages, parcelles, fiches
-  // produits). Bouton retiré après utilisation : trop dangereux à laisser
-  // en permanence sur un outil de registre réglementaire.
-  const reinitialiserActivite = () => {
-    const conf1 = window.confirm(
-      "Supprimer TOUS les lots (et tout leur historique : apports, analyses, relevés, registre...), toutes les mises en bouteille, et remettre le stock de tous les produits à zéro ?\n\n" +
-      "Sont conservés : domaine, lieux, cuveries, contenants, cépages, parcelles, et la liste des produits (juste leur stock est vidé).\n\n" +
-      "Cette action est IRRÉVERSIBLE et s'applique à tous tes appareils."
-    );
-    if (!conf1) return;
-    const conf2 = window.confirm('Dernière confirmation : cette suppression ne peut pas être annulée. Continuer ?');
-    if (!conf2) return;
-
-    setLots({});
-    setConditionnements([]);
-    setProduits((prev) => Object.fromEntries(Object.entries(prev).map(([id, p]) => [id, { ...p, mouvements: [] }])));
-    setLotOuvert(null);
-    alert('Fait : lots, mises et stocks ont été réinitialisés.');
-  };
-
   const exporterExcel = () => {
     const wb = XLSX.utils.book_new();
 
@@ -4713,6 +4751,15 @@ export default function CahierDeChai() {
                                     <td className="col-fixe"><strong>Contenant</strong></td>
                                     {tri.map((o) => <td key={o.id} className="small">{nomContenant(o.contenantId)}</td>)}
                                   </tr>
+                                  <tr>
+                                    <td className="col-fixe"></td>
+                                    {tri.map((o) => (
+                                      <td key={o.id} className="nowrap">
+                                        <button className="btn btn-ghost btn-sm" title="Modifier" onClick={() => ouvrir('analyse', { lotId: lot.id, analyse: o })}>✏️</button>
+                                        <button className="btn btn-ghost btn-sm" title="Supprimer" onClick={() => supprimerOperation(lot.id, o.id)}>✕</button>
+                                      </td>
+                                    ))}
+                                  </tr>
                                 </tbody>
                               </table>
                             </div>
@@ -5391,12 +5438,6 @@ export default function CahierDeChai() {
                 </div>
                 <p className="muted small">
                   Les données sont synchronisées automatiquement entre tous tes appareils. Exporte régulièrement une copie Excel pour garder une sauvegarde indépendante.
-                </p>
-                <div className="quick-row" style={{ marginTop: 14 }}>
-                  <button className="btn btn-danger" onClick={reinitialiserActivite}>🗑️ Réinitialiser lots, mises et stocks</button>
-                </div>
-                <p className="muted small">
-                  Supprime tous les lots et mises en bouteille, remet le stock des produits à zéro. Le référentiel (lieux, contenants, cépages, parcelles, fiches produits) est conservé. Irréversible.
                 </p>
               </div>
             </>
