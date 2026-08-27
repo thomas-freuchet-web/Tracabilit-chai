@@ -960,11 +960,12 @@ function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer, analyse }
     lotId: lot.id, date: analyse.date, heure: analyse.heure || nowTime(),
     contenantId: analyse.contenantId, source: analyse.source || 'interne',
     valeurs: Object.fromEntries(Object.entries(analyse.valeurs || {}).map(([k, v]) => [k, String(v)])),
+    autres: (analyse.autres || []).map((a) => ({ ...a })),
     notes: analyse.notes || '', bulletins: analyse.bulletins || [],
   } : {
     lotId: lot.id, date: today(), heure: nowTime(),
     contenantId: (lot.contenants[0] || {}).contenantId || '',
-    source: 'interne', valeurs: {}, notes: '', bulletins: [],
+    source: 'interne', valeurs: {}, autres: [], notes: '', bulletins: [],
   });
   const [chargement, setChargement] = useState(false);
   const [fichierIA, setFichierIA] = useState(null);
@@ -972,14 +973,18 @@ function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer, analyse }
   const [erreurIA, setErreurIA] = useState('');
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const setVal = (id, v) => setF((p) => ({ ...p, valeurs: { ...p.valeurs, [id]: v } }));
+  const ajouterAutre = () => setF((p) => ({ ...p, autres: [...p.autres, { label: '', valeur: '' }] }));
+  const setAutre = (i, champ, v) => setF((p) => ({ ...p, autres: p.autres.map((a, idx) => (idx === i ? { ...a, [champ]: v } : a)) }));
+  const retirerAutre = (i) => setF((p) => ({ ...p, autres: p.autres.filter((_, idx) => idx !== i) }));
 
   const lireAvecIA = async () => {
     if (!fichierIA) { alert('Choisis un bulletin (PDF ou photo)'); return; }
     setChargementIA(true); setErreurIA('');
     try {
+      const nomCuve = contenants[f.contenantId] ? contenants[f.contenantId].nom : '';
       const base64 = await fichierEnBase64(fichierIA);
       const { data, error } = await supabase.functions.invoke('extraire-bulletin-analyse', {
-        body: { fichierBase64: base64, mimeType: fichierIA.type },
+        body: { fichierBase64: base64, mimeType: fichierIA.type, contenantNom: nomCuve, lotCode: lot.code },
       });
       if (error) {
         let detail = error.message;
@@ -1004,12 +1009,18 @@ function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer, analyse }
         Object.entries(data.valeurs || {}).forEach(([k, v]) => {
           if (v !== null && v !== undefined && v !== '') nouvellesValeurs[k] = String(v);
         });
+        const nouveauxAutres = [...p.autres];
+        (data.autres || []).forEach((a) => {
+          if (!a || !a.label || !a.valeur) return;
+          if (nouveauxAutres.some((x) => x.label.toLowerCase() === String(a.label).toLowerCase())) return;
+          nouveauxAutres.push({ label: String(a.label), valeur: String(a.valeur) });
+        });
         const noteIA = (data.notes || '').trim();
         const notes = !noteIA ? p.notes
           : !p.notes ? noteIA
           : p.notes.includes(noteIA) ? p.notes
           : `${p.notes}\n${noteIA}`;
-        return { ...p, valeurs: nouvellesValeurs, source: 'labo', date: data.date || p.date, notes };
+        return { ...p, valeurs: nouvellesValeurs, autres: nouveauxAutres, source: 'labo', date: data.date || p.date, notes };
       });
 
       // Joint aussi le fichier comme bulletin archivé, pour éviter de le réimporter.
@@ -1089,10 +1100,25 @@ function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer, analyse }
         {PARAMS_ANALYSE.map((p) => (
           <div className="analyse-cell" key={p.id}>
             <label>{p.label}{p.unite ? <span className="unite"> {p.unite}</span> : null}</label>
-            <input type="number" step="any" value={f.valeurs[p.id] || ''} onChange={(e) => setVal(p.id, e.target.value)} />
+            <input type="text" inputMode="decimal" placeholder="ex : 3.4 ou < 5" value={f.valeurs[p.id] || ''} onChange={(e) => setVal(p.id, e.target.value)} />
           </div>
         ))}
       </div>
+
+      <Field label="Autres critères" hint="Tout paramètre qui n'est pas dans la liste ci-dessus : acidité lactique, azote assimilable, turbidité...">
+        {f.autres.map((a, i) => (
+          <div className="field-grid" key={i} style={{ alignItems: 'end', marginBottom: 8 }}>
+            <Field label="Critère"><input type="text" value={a.label} onChange={(e) => setAutre(i, 'label', e.target.value)} /></Field>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'end' }}>
+              <div style={{ flex: 1 }}>
+                <Field label="Valeur"><input type="text" value={a.valeur} onChange={(e) => setAutre(i, 'valeur', e.target.value)} /></Field>
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={() => retirerAutre(i)} style={{ marginBottom: 13 }}>✕</button>
+            </div>
+          </div>
+        ))}
+        <button className="btn btn-outline btn-sm" onClick={ajouterAutre}>+ Ajouter un critère</button>
+      </Field>
 
       <Field label="Bulletin de laboratoire" hint="PDF ou photo — 12 Mo maximum par fichier">
         <input type="file" accept="application/pdf,image/*" multiple onChange={importer} disabled={chargement} />
@@ -2702,32 +2728,43 @@ export default function CahierDeChai() {
     return true;
   };
 
-  const enregistrerAnalyse = (form) => {
-    const valeurs = {};
-    Object.keys(form.valeurs || {}).forEach((k) => {
-      if (form.valeurs[k] !== '' && form.valeurs[k] !== null) valeurs[k] = Number(form.valeurs[k]);
+  // Les valeurs sont conservées en texte (pas converties en nombre) : un
+  // bulletin indique parfois "< 5" ou "traces" plutôt qu'un chiffre pur, et
+  // ça doit rester lisible dans les tableaux plutôt que d'être perdu.
+  const nettoyerValeurs = (valeurs) => {
+    const out = {};
+    Object.keys(valeurs || {}).forEach((k) => {
+      const v = typeof valeurs[k] === 'string' ? valeurs[k].trim() : valeurs[k];
+      if (v !== '' && v !== null && v !== undefined) out[k] = v;
     });
-    if (Object.keys(valeurs).length === 0) { alert('Saisis au moins une valeur'); return false; }
+    return out;
+  };
+  const nettoyerAutres = (autres) => (autres || [])
+    .map((a) => ({ label: (a.label || '').trim(), valeur: (a.valeur || '').trim() }))
+    .filter((a) => a.label && a.valeur);
+
+  const enregistrerAnalyse = (form) => {
+    const valeurs = nettoyerValeurs(form.valeurs);
+    const autres = nettoyerAutres(form.autres);
+    if (Object.keys(valeurs).length === 0 && autres.length === 0) { alert('Saisis au moins une valeur'); return false; }
     ajouterOperation(form.lotId, {
       type: 'analyse', date: form.date, heure: form.heure, contenantId: form.contenantId,
-      source: form.source || 'interne', valeurs, bulletins: form.bulletins || [],
+      source: form.source || 'interne', valeurs, autres, bulletins: form.bulletins || [],
       notes: form.notes || '', auteur: user.id,
     });
     return true;
   };
 
   const majAnalyse = (lotId, opId, form) => {
-    const valeurs = {};
-    Object.keys(form.valeurs || {}).forEach((k) => {
-      if (form.valeurs[k] !== '' && form.valeurs[k] !== null) valeurs[k] = Number(form.valeurs[k]);
-    });
-    if (Object.keys(valeurs).length === 0) { alert('Saisis au moins une valeur'); return false; }
+    const valeurs = nettoyerValeurs(form.valeurs);
+    const autres = nettoyerAutres(form.autres);
+    if (Object.keys(valeurs).length === 0 && autres.length === 0) { alert('Saisis au moins une valeur'); return false; }
     setLots((prev) => ({
       ...prev,
       [lotId]: {
         ...prev[lotId],
         operations: prev[lotId].operations.map((o) => (o.id === opId
-          ? { ...o, date: form.date, heure: form.heure, contenantId: form.contenantId, source: form.source || 'interne', valeurs, bulletins: form.bulletins || [], notes: form.notes || '' }
+          ? { ...o, date: form.date, heure: form.heure, contenantId: form.contenantId, source: form.source || 'interne', valeurs, autres, bulletins: form.bulletins || [], notes: form.notes || '' }
           : o)),
       },
     }));
@@ -3734,6 +3771,7 @@ export default function CahierDeChai() {
         PARAMS_ANALYSE.forEach((p) => {
           ligne[`${p.label}${p.unite ? ` (${p.unite})` : ''}`] = o.valeurs && o.valeurs[p.id] !== undefined ? o.valeurs[p.id] : '';
         });
+        ligne['Autres critères'] = (o.autres || []).map((a) => `${a.label} : ${a.valeur}`).join(' · ');
         ligne['Bulletins joints'] = (o.bulletins || []).map((b) => b.nom).join(' · ');
         ligne['Notes'] = o.notes || '';
         lignesAnalyses.push(ligne);
@@ -4683,11 +4721,21 @@ export default function CahierDeChai() {
                 {ongletLot === 'analyses' && (() => {
                   const tri = [...analyses].sort((a, b) => (a.date + (a.heure || '')).localeCompare(b.date + (b.heure || '')));
                   const utilises = PARAMS_ANALYSE.filter((p) => tri.some((o) => o.valeurs && o.valeurs[p.id] !== undefined));
+                  const versNombre = (v) => {
+                    if (v === null || v === undefined || v === '') return null;
+                    const n = Number(String(v).replace(',', '.').replace(/[^\d.+-]/g, ''));
+                    return isNaN(n) ? null : n;
+                  };
                   const courbe = tri.map((o) => {
                     const pt = { label: `${o.date.slice(5)}${o.heure ? ` ${o.heure}` : ''}` };
-                    PARAMS_ANALYSE.forEach((p) => { pt[p.id] = o.valeurs && o.valeurs[p.id] !== undefined ? o.valeurs[p.id] : null; });
+                    PARAMS_ANALYSE.forEach((p) => { pt[p.id] = o.valeurs && o.valeurs[p.id] !== undefined ? versNombre(o.valeurs[p.id]) : null; });
                     return pt;
                   });
+                  // Union des critères "autres" (hors liste fixe) rencontrés sur les analyses de ce lot
+                  const autresUtilises = [];
+                  tri.forEach((o) => (o.autres || []).forEach((a) => {
+                    if (!autresUtilises.some((x) => x.toLowerCase() === a.label.toLowerCase())) autresUtilises.push(a.label);
+                  }));
                   const COULEURS_COURBE = ['var(--bordeaux-500)', 'var(--steel-500)', 'var(--straw-500)', 'var(--green-600)', '#574a75', '#a0632f'];
                   const bulletins = [];
                   opsCompletes.filter((o) => o.type === 'analyse' && (o.bulletins || []).length)
@@ -4761,7 +4809,8 @@ export default function CahierDeChai() {
                                         <td className="col-fixe"><strong>{p.label}</strong>{p.unite ? <div className="muted small">{p.unite}</div> : null}</td>
                                         {vals.map((v, i) => {
                                           const prec = i > 0 ? vals.slice(0, i).reverse().find((x) => x !== null) : null;
-                                          const delta = v !== null && prec !== null && prec !== undefined ? roundFin(v - prec) : null;
+                                          const vNum = versNombre(v), precNum = versNombre(prec);
+                                          const delta = vNum !== null && precNum !== null ? roundFin(vNum - precNum) : null;
                                           return (
                                             <td key={i} className="mono">
                                               {v !== null ? v : '—'}
@@ -4774,6 +4823,15 @@ export default function CahierDeChai() {
                                       </tr>
                                     );
                                   })}
+                                  {autresUtilises.map((label) => (
+                                    <tr key={label}>
+                                      <td className="col-fixe"><strong>{label}</strong></td>
+                                      {tri.map((o) => {
+                                        const trouve = (o.autres || []).find((a) => a.label.toLowerCase() === label.toLowerCase());
+                                        return <td key={o.id} className="mono">{trouve ? trouve.valeur : '—'}</td>;
+                                      })}
+                                    </tr>
+                                  ))}
                                   <tr>
                                     <td className="col-fixe"><strong>Contenant</strong></td>
                                     {tri.map((o) => <td key={o.id} className="small">{nomContenant(o.contenantId)}</td>)}
