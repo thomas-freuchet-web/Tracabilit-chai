@@ -1144,6 +1144,170 @@ function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer, analyse }
   );
 }
 
+function ModaleImportBulletinMulti({ lots, contenants, userId, onValider, onFermer }) {
+  const cuvesConnues = useMemo(() => {
+    const out = [];
+    lots.forEach((lot) => {
+      (lot.contenants || []).forEach((c) => {
+        if ((Number(c.volume) || 0) <= 0) return;
+        const cont = contenants[c.contenantId];
+        if (!cont) return;
+        out.push({ lotId: lot.id, lotCode: lot.code, contenantId: c.contenantId, nom: cont.nom });
+      });
+    });
+    return out;
+  }, [lots, contenants]);
+
+  const [fichier, setFichier] = useState(null);
+  const [chargement, setChargement] = useState(false);
+  const [erreur, setErreur] = useState('');
+  const [echantillons, setEchantillons] = useState(null); // null = pas encore lu
+
+  const trouverCuve = (nom) => {
+    if (!nom) return null;
+    return cuvesConnues.find((c) => c.nom.toLowerCase() === String(nom).toLowerCase()) || null;
+  };
+
+  const lireAvecIA = async () => {
+    if (!fichier) { alert('Choisis un bulletin (PDF ou photo)'); return; }
+    setChargement(true); setErreur('');
+    try {
+      const base64 = await fichierEnBase64(fichier);
+      const { data, error } = await supabase.functions.invoke('extraire-bulletin-multi', {
+        body: {
+          fichierBase64: base64, mimeType: fichier.type,
+          cuves: cuvesConnues.map((c) => ({ nom: c.nom, lotCode: c.lotCode })),
+        },
+      });
+      if (error) {
+        let detail = error.message;
+        let statut = null;
+        if (error.context) {
+          statut = error.context.status;
+          if (typeof error.context.json === 'function') {
+            try {
+              const corps = await error.context.json();
+              if (corps && (corps.error || corps.message)) detail = corps.error || corps.message;
+            } catch { /* corps non-JSON, on garde le message générique */ }
+          }
+        }
+        // eslint-disable-next-line no-console
+        console.error('Erreur lecture IA multi-cuves du bulletin :', { statut, detail, error });
+        throw new Error(statut ? `${detail} (HTTP ${statut})` : detail);
+      }
+      if (data && data.error) throw new Error(data.error);
+
+      let bulletinMeta = null;
+      try { bulletinMeta = await uploaderBulletin(userId, fichier); }
+      catch { /* extraction réussie malgré tout ; le bulletin ne sera pas archivé */ }
+
+      const liste = (data.echantillons || []).map((e) => {
+        const match = trouverCuve(e.cuveCorrespondante);
+        return {
+          id: uid('ech'),
+          nomSurBulletin: e.nomSurBulletin || '(sans nom)',
+          lotId: match ? match.lotId : '',
+          contenantId: match ? match.contenantId : '',
+          date: e.date || today(),
+          valeurs: e.valeurs || {},
+          autres: (e.autres || []).filter((a) => a && a.label && a.valeur),
+          notes: e.notes || '',
+          bulletins: bulletinMeta ? [bulletinMeta] : [],
+          inclure: true,
+        };
+      });
+      if (liste.length === 0) setErreur("Aucun échantillon n'a été détecté sur ce bulletin.");
+      setEchantillons(liste);
+    } catch (e) {
+      setErreur("Impossible d'analyser le bulletin : " + (e && e.message ? e.message : 'erreur inconnue'));
+    }
+    setChargement(false);
+  };
+
+  const setChamp = (id, champ, v) => setEchantillons((prev) => prev.map((e) => (e.id === id ? { ...e, [champ]: v } : e)));
+  const setCuveChoisie = (id, valeur) => {
+    const [lotId, contenantId] = valeur ? valeur.split('|') : ['', ''];
+    setEchantillons((prev) => prev.map((e) => (e.id === id ? { ...e, lotId, contenantId } : e)));
+  };
+
+  const nbSelectionnes = (echantillons || []).filter((e) => e.inclure && e.lotId).length;
+
+  const valider = () => {
+    const aTraiter = echantillons.filter((e) => e.inclure);
+    if (aTraiter.some((e) => !e.lotId)) {
+      alert('Choisis une cuve pour chaque échantillon coché, ou décoche-le.');
+      return;
+    }
+    if (nbSelectionnes === 0) { alert('Sélectionne au moins un échantillon à importer.'); return; }
+    const compte = onValider(echantillons);
+    alert(`${compte} analyse${compte > 1 ? 's' : ''} enregistrée${compte > 1 ? 's' : ''}.`);
+    onFermer();
+  };
+
+  const apercu = (e) => {
+    const morceaux = [];
+    PARAMS_ANALYSE.forEach((p) => {
+      const v = e.valeurs[p.id];
+      if (v !== null && v !== undefined && v !== '') morceaux.push(`${p.label} : ${v}${p.unite ? ` ${p.unite}` : ''}`);
+    });
+    (e.autres || []).forEach((a) => morceaux.push(`${a.label} : ${a.valeur}`));
+    return morceaux;
+  };
+
+  return (
+    <Modal title="Analyser un bulletin" subtitle="Un bulletin peut couvrir plusieurs cuves : l'IA les détecte et propose une cuve pour chacune, à valider avant enregistrement." onClose={onFermer} large>
+      <Field label="Bulletin de laboratoire" hint="PDF ou photo — 12 Mo maximum">
+        <input type="file" accept="application/pdf,image/*" onChange={(e) => setFichier(e.target.files[0] || null)} disabled={chargement} />
+      </Field>
+      <div className="form-actions">
+        <button className="btn btn-primary" disabled={chargement || !fichier} onClick={lireAvecIA}>
+          {chargement ? 'Lecture en cours…' : "🤖 Lire avec l'IA"}
+        </button>
+      </div>
+      {erreur && <p className="inline-note warn">{erreur}</p>}
+
+      {echantillons && echantillons.length > 0 && (
+        <>
+          <p className="muted small" style={{ marginTop: 16 }}>
+            {echantillons.length} échantillon{echantillons.length > 1 ? 's' : ''} détecté{echantillons.length > 1 ? 's' : ''}.
+          </p>
+          {echantillons.map((e) => (
+            <div key={e.id} className="stat-card" style={{ marginTop: 10 }}>
+              <div className="field-grid" style={{ alignItems: 'end' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input type="checkbox" checked={e.inclure} onChange={(ev) => setChamp(e.id, 'inclure', ev.target.checked)} />
+                  <span><strong>Sur le bulletin :</strong> {e.nomSurBulletin}</span>
+                </label>
+                <Field label="Cuve à associer">
+                  <select value={e.lotId ? `${e.lotId}|${e.contenantId}` : ''} onChange={(ev) => setCuveChoisie(e.id, ev.target.value)}>
+                    <option value="">— Choisir une cuve —</option>
+                    {cuvesConnues.map((c) => (
+                      <option key={`${c.lotId}|${c.contenantId}`} value={`${c.lotId}|${c.contenantId}`}>
+                        {c.lotCode} — {c.nom}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Date"><input type="date" value={e.date} onChange={(ev) => setChamp(e.id, 'date', ev.target.value)} /></Field>
+              </div>
+              {!e.lotId && <p className="inline-note warn">Cuve non reconnue automatiquement : choisis-la manuellement pour importer cet échantillon.</p>}
+              <p className="muted small" style={{ marginTop: 8 }}>{apercu(e).length ? apercu(e).join(' · ') : 'Aucune valeur détectée.'}</p>
+              {e.notes && <p className="muted small">Note du labo : {e.notes}</p>}
+            </div>
+          ))}
+        </>
+      )}
+
+      <div className="form-actions" style={{ marginTop: 16 }}>
+        {echantillons && echantillons.length > 0 && (
+          <button className="btn btn-primary" onClick={valider}>Enregistrer les analyses sélectionnées</button>
+        )}
+        <button className="btn btn-outline" onClick={onFermer}>Fermer</button>
+      </div>
+    </Modal>
+  );
+}
+
 function ModaleTravail({ lot, contenants, onValider, onFermer, travail }) {
   const [f, setF] = useState(travail ? {
     lotId: lot.id, date: travail.date, heure: travail.heure || nowTime(), action: travail.action,
@@ -2771,6 +2935,23 @@ export default function CahierDeChai() {
     return true;
   };
 
+  const enregistrerAnalysesMulti = (echantillons) => {
+    let compte = 0;
+    echantillons.forEach((ech) => {
+      if (!ech.inclure || !ech.lotId) return;
+      const valeurs = nettoyerValeurs(ech.valeurs);
+      const autres = nettoyerAutres(ech.autres);
+      if (Object.keys(valeurs).length === 0 && autres.length === 0) return;
+      ajouterOperation(ech.lotId, {
+        type: 'analyse', date: ech.date || today(), heure: nowTime(), contenantId: ech.contenantId,
+        source: 'labo', valeurs, autres, bulletins: ech.bulletins || [],
+        notes: ech.notes || '', auteur: user.id,
+      });
+      compte += 1;
+    });
+    return compte;
+  };
+
   const enregistrerTravail = (form) => {
     if (!form.action) { alert('Choisis une action'); return false; }
     ajouterOperation(form.lotId, {
@@ -4119,6 +4300,9 @@ export default function CahierDeChai() {
       case 'entreeStock':
         return <ModaleEntreeStock produit={produits[payload.produitId]} mouvement={payload.mouvement}
           onValider={payload.mouvement ? (f) => majEntreeStock(payload.produitId, payload.mouvement.id, f) : entrerStock} onFermer={fermer} />;
+      case 'bulletinMulti':
+        return <ModaleImportBulletinMulti lots={lotsActifs} contenants={contenants} userId={user.uid}
+          onValider={(echantillons) => enregistrerAnalysesMulti(echantillons)} onFermer={fermer} />;
       case 'importBonLivraison':
         return <ModaleImportBonLivraison produits={produits} onImporter={importerProduitsIA} onFermer={fermer} />;
       case 'produitDetail':
@@ -4164,6 +4348,7 @@ export default function CahierDeChai() {
         </div>
         <div className="topbar-actions">
           <button className="btn btn-primary" onClick={() => ouvrir('apport')}>+ Apport de vendange</button>
+          <button className="btn btn-ghost light" onClick={() => ouvrir('bulletinMulti')}>+ Analyser un bulletin</button>
           <span className="muted small sync-status">
             {syncEtat.statut === 'en_cours' ? 'Synchronisation…'
               : syncEtat.statut === 'horsligne' ? 'Hors ligne — données locales'

@@ -24,6 +24,9 @@ jobs:
       - run: supabase functions deploy extraire-bulletin-analyse --project-ref jkqktroprtnnivbfgyph
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      - run: supabase functions deploy extraire-bulletin-multi --project-ref jkqktroprtnnivbfgyph
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       - run: supabase secrets set GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}" --project-ref jkqktroprtnnivbfgyph
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
