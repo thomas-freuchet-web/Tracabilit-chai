@@ -3,6 +3,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Responsi
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabaseClient';
 import { chargerEtat, sauvegarderEtat } from './lib/cloudStore';
+import { fusionnerEtats } from './lib/fusionEtat';
 import { genererPdfCuve, telechargerBlob } from './lib/pdfRecap';
 import { genererPdfRegistre } from './lib/pdfRegistre';
 import { uploaderBulletin, ouvrirBulletinStorage, supprimerBulletinStorage } from './lib/storageBulletins';
@@ -2339,10 +2340,67 @@ export default function CahierDeChai() {
   useEffect(() => { localStorage.setItem('cdc_lots', JSON.stringify(lots)); }, [lots]);
   useEffect(() => { localStorage.setItem('cdc_conditionnements', JSON.stringify(conditionnements)); }, [conditionnements]);
 
-  /* ---------- Synchronisation Supabase (mêmes données sur tous les appareils) ---------- */
+  /* ---------- Synchronisation Supabase (mêmes données sur tous les appareils) ----------
+     Plusieurs appareils (ou plusieurs personnes sur le même compte) peuvent
+     travailler à la suite, voire en même temps. Pour ne plus jamais qu'un
+     appareil écrase silencieusement tout ce que les autres ont ajouté entre
+     temps, chaque sauvegarde repart d'une fusion à trois versions (voir
+     src/lib/fusionEtat.js) : la dernière version que cet appareil et le
+     serveur avaient en commun ("base"), l'état local actuel, et l'état
+     actuellement sur le serveur. Un canal Supabase Realtime prévient aussi
+     chaque appareil dès qu'un autre vient de sauvegarder, pour que tout le
+     monde converge en quelques secondes plutôt qu'à la prochaine ouverture. */
   const [syncEtat, setSyncEtat] = useState({ statut: 'inactif', quand: null }); // inactif | en_cours | synchronise | horsligne
   const chargementInitialFait = useRef(false);
   const minuteurSync = useRef(null);
+  const baseCloudRef = useRef(null); // dernier état accordé entre cet appareil et le serveur
+  const etatActuelRef = useRef(null); // reflet à jour de l'état local, sans dépendre des closures de useEffect
+  const enSynchro = useRef(false); // évite deux synchronisations en parallèle
+  const applicationDistanteEnCours = useRef(false); // pour ne pas re-déclencher une sauvegarde en appliquant une fusion reçue
+  const derniereSynchroRef = useRef(0); // pour ignorer l'écho Realtime de notre propre sauvegarde
+
+  useEffect(() => {
+    etatActuelRef.current = { domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements };
+  }, [domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements]);
+
+  const appliquerEtat = (etat) => {
+    applicationDistanteEnCours.current = true;
+    if (etat.domaine) setDomaine(etat.domaine);
+    setLieux(etat.lieux || {});
+    setContenants(etat.contenants || {});
+    setCepages(etat.cepages || {});
+    setParcelles(etat.parcelles || {});
+    setProduits(etat.produits || {});
+    setLots(etat.lots || {});
+    setConditionnements(etat.conditionnements || []);
+  };
+
+  // Fusionne l'état local avec ce qui est actuellement sur le serveur (utile
+  // aussi bien après une modification locale qu'à la réception d'un signal
+  // Realtime signalant qu'un autre appareil vient de sauvegarder), puis
+  // republie le résultat si besoin. Rien n'est écrasé : voir fusionnerEtats.
+  const synchroniser = async () => {
+    if (!user || enSynchro.current) return;
+    enSynchro.current = true;
+    setSyncEtat((s) => ({ ...s, statut: 'en_cours' }));
+    try {
+      const distant = await chargerEtat(user.uid);
+      const local = etatActuelRef.current;
+      const fusion = distant ? fusionnerEtats(baseCloudRef.current, local, distant) : local;
+      if (JSON.stringify(fusion) !== JSON.stringify(local)) appliquerEtat(fusion);
+      if (!distant || JSON.stringify(fusion) !== JSON.stringify(distant)) {
+        await sauvegarderEtat(user.uid, fusion);
+      }
+      baseCloudRef.current = fusion;
+      localStorage.removeItem('cdc_pending_sync');
+      setSyncEtat({ statut: 'synchronise', quand: new Date() });
+      derniereSynchroRef.current = Date.now();
+    } catch (e) {
+      setSyncEtat({ statut: 'horsligne', quand: null });
+    } finally {
+      enSynchro.current = false;
+    }
+  };
 
   // Au login : si la session précédente s'est arrêtée avant d'avoir confirmé
   // l'envoi de ses dernières modifications (coupure réseau, app fermée
@@ -2350,14 +2408,16 @@ export default function CahierDeChai() {
   // l'état cloud — sinon un état cloud plus ancien écraserait silencieusement
   // des saisies jamais synchronisées (relevés, apports…).
   useEffect(() => {
-    if (!user) { chargementInitialFait.current = false; return; }
+    if (!user) { chargementInitialFait.current = false; baseCloudRef.current = null; return; }
     let annule = false;
     (async () => {
       try {
         const enAttente = localStorage.getItem('cdc_pending_sync');
+        const etatLocal = { domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements };
         if (enAttente) {
-          await sauvegarderEtat(user.uid, { domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements });
+          await sauvegarderEtat(user.uid, etatLocal);
           if (annule) return;
+          baseCloudRef.current = etatLocal;
           localStorage.removeItem('cdc_pending_sync');
           chargementInitialFait.current = true;
           setSyncEtat({ statut: 'synchronise', quand: new Date() });
@@ -2374,8 +2434,10 @@ export default function CahierDeChai() {
           setProduits(cloud.produits || {});
           setLots(cloud.lots || {});
           setConditionnements(cloud.conditionnements || []);
+          baseCloudRef.current = cloud;
         } else {
-          await sauvegarderEtat(user.uid, { domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements });
+          await sauvegarderEtat(user.uid, etatLocal);
+          baseCloudRef.current = etatLocal;
         }
         chargementInitialFait.current = true;
         setSyncEtat({ statut: 'synchronise', quand: new Date() });
@@ -2387,27 +2449,39 @@ export default function CahierDeChai() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
-  // À chaque changement de données, on republie vers Supabase (débounce 1 s).
-  // Le marqueur "cdc_pending_sync" est posé immédiatement (avant même le
+  // À chaque changement de données, on republie vers Supabase (débounce 1 s)
+  // via une fusion à trois versions plutôt qu'un simple écrasement. Le
+  // marqueur "cdc_pending_sync" est posé immédiatement (avant même le
   // débounce) et n'est retiré qu'après confirmation d'envoi : s'il est encore
   // là au prochain démarrage, c'est qu'un envoi a été interrompu.
   useEffect(() => {
     if (!user || !chargementInitialFait.current) return;
+    if (applicationDistanteEnCours.current) { applicationDistanteEnCours.current = false; return; }
     localStorage.setItem('cdc_pending_sync', String(Date.now()));
     setSyncEtat((s) => ({ ...s, statut: 'en_cours' }));
     clearTimeout(minuteurSync.current);
-    minuteurSync.current = setTimeout(async () => {
-      try {
-        await sauvegarderEtat(user.uid, { domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements });
-        localStorage.removeItem('cdc_pending_sync');
-        setSyncEtat({ statut: 'synchronise', quand: new Date() });
-      } catch (e) {
-        setSyncEtat({ statut: 'horsligne', quand: null });
-      }
-    }, 1000);
+    minuteurSync.current = setTimeout(synchroniser, 1000);
     return () => clearTimeout(minuteurSync.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements]);
+
+  // Signal Realtime : dès qu'un autre appareil (ou collègue) vient de
+  // sauvegarder, on fusionne tout de suite au lieu d'attendre la prochaine
+  // ouverture — ça réduit à quelques secondes la fenêtre pendant laquelle
+  // deux appareils pourraient diverger.
+  useEffect(() => {
+    if (!user) return;
+    const gererSignal = () => {
+      if (Date.now() - derniereSynchroRef.current < 800) return;
+      synchroniser();
+    };
+    const canal = supabase
+      .channel(`cdc_state_${user.uid}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cdc_state', filter: `user_id=eq.${user.uid}` }, gererSignal)
+      .subscribe();
+    return () => { supabase.removeChannel(canal); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
 
   /* ---------- Navigation ---------- */
   const [vue, setVue] = useState('accueil');          // accueil | cave | produits | registre | mise | parametres
