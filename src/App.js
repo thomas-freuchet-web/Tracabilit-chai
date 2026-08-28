@@ -417,8 +417,21 @@ function EmptyState({ titre, texte, action }) {
   );
 }
 
-function LigneOrdreTravail({ ordre, lot, onValider, onModifier, onSupprimer, onAnnuler }) {
+function LigneOrdreTravail({ ordre, lot, produits, contenants, onValider, onModifier, onSupprimer, onAnnuler }) {
   const typeInfo = TYPES_ORDRE.find((t) => t.id === ordre.type) || TYPES_ORDRE[0];
+  const d = ordre.details || {};
+  let detail = '';
+  if (ordre.type === 'ajout' && d.produitId && produits[d.produitId]) {
+    const p = produits[d.produitId];
+    detail = `${p.nom}${d.quantite ? ` · ${d.quantite} ${p.unite}` : ''}`;
+  } else if (ordre.type === 'transfert' && d.contenantDestId && contenants[d.contenantDestId]) {
+    detail = `→ ${contenants[d.contenantDestId].nom}${d.volume ? ` · ${d.volume} hL` : ''}`;
+  } else if (ordre.type === 'travail' && d.action) {
+    detail = d.action;
+  } else if (ordre.type === 'perte' && d.motif) {
+    detail = d.motif;
+  }
+  const nomsContenants = lot ? (lot.contenants || []).map((c) => (contenants[c.contenantId] ? contenants[c.contenantId].nom : '?')).join(', ') : '';
   return (
     <div className={`ordre-ligne ${ordre.fait ? 'fait' : ''}`}>
       <button className="ordre-check" onClick={() => (ordre.fait ? onAnnuler(ordre.id) : onValider(ordre))}
@@ -429,7 +442,8 @@ function LigneOrdreTravail({ ordre, lot, onValider, onModifier, onSupprimer, onA
         <div className="ordre-titre">{ordre.titre}</div>
         <div className="muted small">
           <span className={`op-tag op-${ordre.type}`}>{typeInfo.label}</span>
-          {lot && <> · {lot.code}</>}
+          {lot && <> · {lot.code}{nomsContenants ? ` (${nomsContenants})` : ''}</>}
+          {detail && <> · {detail}</>}
           {ordre.fait && ordre.faitLe && <> · fait à {ordre.faitLe.slice(11, 16)}</>}
         </div>
         {ordre.notes && <div className="muted small">{ordre.notes}</div>}
@@ -637,14 +651,24 @@ function ModaleAjoutProduit({ lot, produits, contenants, onValider, onFermer, aj
   const [f, setF] = useState(ajout ? {
     lotId: lot.id, produitId: ajout.produitId, quantite: String(ajout.quantite), date: ajout.date,
     contenantId: ajout.contenantId, numeroLotFournisseur: ajout.numeroLotFournisseur || '',
-    dluo: ajout.dluo || '', notes: ajout.notes || '', manipType: ajout.manipType || '',
+    dluo: ajout.dluo || '', notes: ajout.notes || '', manipType: ajout.manipType || '', dose: '',
   } : {
     lotId: lot.id, produitId: '', quantite: '', date: today(),
     contenantId: (lot.contenants[0] || {}).contenantId || '',
-    numeroLotFournisseur: '', dluo: '', notes: '', manipType: '',
+    numeroLotFournisseur: '', dluo: '', notes: '', manipType: '', dose: '',
     ...(initial || {}),
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  // Calcule la quantité à partir d'une dose par hL, sur le volume du lot —
+  // pratique pour ne pas avoir à faire le calcul soi-même (ex. 20 g/hL sur
+  // une cuve de 35 hL → 700 g).
+  const setDose = (v) => {
+    const doseNum = Number(v.replace(',', '.'));
+    setF((p) => ({
+      ...p, dose: v,
+      quantite: (v !== '' && !Number.isNaN(doseNum) && volumeLot(lot) > 0) ? String(round2(doseNum * volumeLot(lot))) : p.quantite,
+    }));
+  };
   const prod = produits[f.produitId];
   const dispo = prod ? stockProduit(prod) : 0;
   const lotsDispo = prod ? stockParLotFournisseur(prod).filter((l) => l.reste > 0) : [];
@@ -726,10 +750,15 @@ function ModaleAjoutProduit({ lot, produits, contenants, onValider, onFermer, aj
         </p>
       )}
 
+      {prod && volumeLot(lot) > 0 && (
+        <Field label={`Dose souhaitée (${prod.unite}/hL)`} hint={`Calcule automatiquement la quantité pour les ${volumeLot(lot)} hL du lot`}>
+          <input type="number" step="0.01" value={f.dose} onChange={(e) => setDose(e.target.value)} placeholder="ex : 20" />
+        </Field>
+      )}
       <div className="field-grid">
         <Field label={`Quantité${prod ? ` (${prod.unite})` : ''}`}
           hint={lotChoisi ? `Reste ${lotChoisi.reste} ${prod.unite} sur ce lot` : ''}>
-          <input type="number" step="0.01" value={f.quantite} onChange={(e) => set('quantite', e.target.value)} />
+          <input type="number" step="0.01" value={f.quantite} onChange={(e) => { set('quantite', e.target.value); set('dose', ''); }} />
         </Field>
         <Field label="Registre réglementaire" hint="Prérempli si le produit y est soumis">
           <select value={f.manipType} onChange={(e) => set('manipType', e.target.value)}>
@@ -1451,14 +1480,26 @@ function ModalePerte({ lot, contenants, onValider, onFermer, perte, initial }) {
 function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, ordre }) {
   const [f, setF] = useState(ordre ? {
     date: ordre.date, type: ordre.type, titre: ordre.titre, lotId: ordre.lotId || '',
-    produitId: ordre.details.produitId || '', quantite: ordre.details.quantite || '',
+    produitId: ordre.details.produitId || '', quantite: ordre.details.quantite || '', dose: '',
     contenantDestId: ordre.details.contenantDestId || '', volume: ordre.details.volume || '',
     action: ordre.details.action || '', motif: ordre.details.motif || '', notes: ordre.notes || '',
   } : {
     date: today(), type: 'libre', titre: '', lotId: '',
-    produitId: '', quantite: '', contenantDestId: '', volume: '', action: '', motif: '', notes: '',
+    produitId: '', quantite: '', dose: '', contenantDestId: '', volume: '', action: '', motif: '', notes: '',
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const lotSelectionne = lots.find((l) => l.id === f.lotId);
+  const prod = produits[f.produitId];
+  // Calcule la quantité planifiée à partir d'une dose par hL, sur le volume
+  // actuel de la cuve choisie.
+  const setDose = (v) => {
+    const doseNum = Number(v.replace(',', '.'));
+    setF((p) => ({
+      ...p, dose: v,
+      quantite: (v !== '' && !Number.isNaN(doseNum) && lotSelectionne && volumeLot(lotSelectionne) > 0)
+        ? String(round2(doseNum * volumeLot(lotSelectionne))) : p.quantite,
+    }));
+  };
 
   const valider = () => {
     const details = {
@@ -1497,17 +1538,23 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
       )}
 
       {f.type === 'ajout' && (
-        <div className="field-grid">
+        <>
           <Field label="Produit">
             <select value={f.produitId} onChange={(e) => set('produitId', e.target.value)}>
               <option value="">— Sélectionner —</option>
               {Object.values(produits).map((p) => <option key={p.id} value={p.id}>{p.nom}</option>)}
             </select>
           </Field>
-          <Field label="Quantité planifiée" hint="Optionnel">
-            <input type="number" step="0.01" value={f.quantite} onChange={(e) => set('quantite', e.target.value)} />
-          </Field>
-        </div>
+          <div className="field-grid">
+            <Field label={`Dose souhaitée${prod ? ` (${prod.unite}/hL)` : ' (par hL)'}`}
+              hint={lotSelectionne ? `Calcule la quantité pour les ${volumeLot(lotSelectionne)} hL de la cuve` : 'Choisis la cuve pour calculer'}>
+              <input type="number" step="0.01" value={f.dose} onChange={(e) => setDose(e.target.value)} placeholder="ex : 20" />
+            </Field>
+            <Field label={`Quantité planifiée${prod ? ` (${prod.unite})` : ''}`} hint="Optionnel">
+              <input type="number" step="0.01" value={f.quantite} onChange={(e) => { set('quantite', e.target.value); set('dose', ''); }} />
+            </Field>
+          </div>
+        </>
       )}
 
       {f.type === 'transfert' && (
@@ -4745,7 +4792,7 @@ export default function CahierDeChai() {
                 ) : (
                   <>
                     {ordresJour.slice(0, 6).map((o) => (
-                      <LigneOrdreTravail key={o.id} ordre={o} lot={o.lotId ? lots[o.lotId] : null}
+                      <LigneOrdreTravail key={o.id} ordre={o} lot={o.lotId ? lots[o.lotId] : null} produits={produits} contenants={contenants}
                         onValider={validerOuOuvrirOrdre}
                         onModifier={(ord) => ouvrir('ordreTravail', { ordre: ord })}
                         onSupprimer={supprimerOrdreTravail}
@@ -4872,7 +4919,7 @@ export default function CahierDeChai() {
                   <EmptyState titre="Aucune tâche" texte={`Rien de prévu pour le ${dateOrdre}.`} />
                 ) : (
                   ordresDateAffichee.map((o) => (
-                    <LigneOrdreTravail key={o.id} ordre={o} lot={o.lotId ? lots[o.lotId] : null}
+                    <LigneOrdreTravail key={o.id} ordre={o} lot={o.lotId ? lots[o.lotId] : null} produits={produits} contenants={contenants}
                       onValider={validerOuOuvrirOrdre}
                       onModifier={(ord) => ouvrir('ordreTravail', { ordre: ord })}
                       onSupprimer={supprimerOrdreTravail}
