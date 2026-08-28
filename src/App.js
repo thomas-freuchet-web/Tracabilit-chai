@@ -2308,13 +2308,23 @@ export default function CahierDeChai() {
   const [loginErreur, setLoginErreur] = useState('');
   const [connexionEnCours, setConnexionEnCours] = useState(false);
 
+  // Supabase rafraîchit le jeton de session automatiquement (~toutes les
+  // heures) et redéclenche onAuthStateChange à chaque fois, même sans
+  // changement de compte : on ne remplace l'objet "user" que si le compte a
+  // réellement changé, pour ne pas relancer inutilement le chargement/fusion
+  // initial (voir plus bas) à chaque rafraîchissement silencieux.
   useEffect(() => {
+    const versUser = (session) => (session ? { id: session.user.email, uid: session.user.id } : null);
     supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session ? { id: session.user.email, uid: session.user.id } : null);
+      setUser(versUser(session));
       setAuthLoading(false);
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session ? { id: session.user.email, uid: session.user.id } : null);
+      setUser((prev) => {
+        const suivant = versUser(session);
+        if (prev && suivant && prev.uid === suivant.uid) return prev;
+        return suivant;
+      });
     });
     return () => subscription.unsubscribe();
   }, []);
@@ -2358,6 +2368,7 @@ export default function CahierDeChai() {
   const enSynchro = useRef(false); // évite deux synchronisations en parallèle
   const applicationDistanteEnCours = useRef(false); // pour ne pas re-déclencher une sauvegarde en appliquant une fusion reçue
   const derniereSynchroRef = useRef(0); // pour ignorer l'écho Realtime de notre propre sauvegarde
+  const etatDejaVuRef = useRef(null); // snapshot du dernier état vu, pour distinguer une vraie saisie du simple montage
 
   useEffect(() => {
     etatActuelRef.current = { domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements };
@@ -2402,44 +2413,42 @@ export default function CahierDeChai() {
     }
   };
 
-  // Au login : si la session précédente s'est arrêtée avant d'avoir confirmé
-  // l'envoi de ses dernières modifications (coupure réseau, app fermée
-  // pendant le débounce…), on les pousse en priorité au lieu d'aller chercher
-  // l'état cloud — sinon un état cloud plus ancien écraserait silencieusement
-  // des saisies jamais synchronisées (relevés, apports…).
+  // Au login (et à chaque rafraîchissement de session Supabase) : on fusionne
+  // ce que ce device connaissait déjà au démarrage avec l'état actuellement
+  // sur le serveur. On utilise l'état local FRAIS (etatActuelRef, relu au
+  // moment où la réponse du serveur arrive, pas figé au moment du montage)
+  // comme un des deux côtés de la fusion — ça protège une saisie faite dans
+  // les tout premiers instants de l'ouverture de l'appli, pendant que ce
+  // chargement était encore en cours (c'est ce qui a fait disparaître un
+  // relevé de cave saisi juste après l'ouverture, avant ce correctif).
+  //
+  // Si la session précédente s'est arrêtée avant d'avoir confirmé l'envoi de
+  // ses dernières modifications (marqueur "cdc_pending_sync" encore présent
+  // au démarrage), on ne prend pas le risque d'utiliser l'état local comme
+  // référence commune ("base") de la fusion — on repart d'une base vide, ce
+  // qui revient à dire "tout ce que ce device a est potentiellement une
+  // saisie jamais confirmée, à préserver" plutôt que de l'écraser.
   useEffect(() => {
     if (!user) { chargementInitialFait.current = false; baseCloudRef.current = null; return; }
     let annule = false;
+    const enAttente = !!localStorage.getItem('cdc_pending_sync');
+    const localAuMontage = { domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements };
+    const baseDepart = enAttente
+      ? { domaine: {}, lieux: {}, contenants: {}, cepages: {}, parcelles: {}, produits: {}, lots: {}, conditionnements: [] }
+      : localAuMontage;
     (async () => {
       try {
-        const enAttente = localStorage.getItem('cdc_pending_sync');
-        const etatLocal = { domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements };
-        if (enAttente) {
-          await sauvegarderEtat(user.uid, etatLocal);
-          if (annule) return;
-          baseCloudRef.current = etatLocal;
-          localStorage.removeItem('cdc_pending_sync');
-          chargementInitialFait.current = true;
-          setSyncEtat({ statut: 'synchronise', quand: new Date() });
-          return;
-        }
         const cloud = await chargerEtat(user.uid);
         if (annule) return;
-        if (cloud) {
-          if (cloud.domaine) setDomaine(cloud.domaine);
-          setLieux(cloud.lieux || {});
-          setContenants(cloud.contenants || {});
-          setCepages(cloud.cepages || {});
-          setParcelles(cloud.parcelles || {});
-          setProduits(cloud.produits || {});
-          setLots(cloud.lots || {});
-          setConditionnements(cloud.conditionnements || []);
-          baseCloudRef.current = cloud;
-        } else {
-          await sauvegarderEtat(user.uid, etatLocal);
-          baseCloudRef.current = etatLocal;
+        const local = etatActuelRef.current || localAuMontage;
+        const fusion = cloud ? fusionnerEtats(baseDepart, local, cloud) : local;
+        appliquerEtat(fusion);
+        if (!cloud || JSON.stringify(fusion) !== JSON.stringify(cloud)) {
+          await sauvegarderEtat(user.uid, fusion);
         }
+        baseCloudRef.current = fusion;
         chargementInitialFait.current = true;
+        localStorage.removeItem('cdc_pending_sync');
         setSyncEtat({ statut: 'synchronise', quand: new Date() });
       } catch (e) {
         if (!annule) setSyncEtat({ statut: 'horsligne', quand: null });
@@ -2451,14 +2460,22 @@ export default function CahierDeChai() {
 
   // À chaque changement de données, on republie vers Supabase (débounce 1 s)
   // via une fusion à trois versions plutôt qu'un simple écrasement. Le
-  // marqueur "cdc_pending_sync" est posé immédiatement (avant même le
-  // débounce) et n'est retiré qu'après confirmation d'envoi : s'il est encore
-  // là au prochain démarrage, c'est qu'un envoi a été interrompu.
+  // marqueur "cdc_pending_sync" est posé dès qu'une VRAIE saisie a lieu — y
+  // compris pendant que le chargement initial ci-dessus est encore en cours —
+  // et n'est retiré qu'après confirmation d'envoi : s'il est encore là au
+  // prochain démarrage, l'effet ci-dessus saura qu'il ne faut pas utiliser
+  // l'état local comme référence de fusion sans précaution.
   useEffect(() => {
-    if (!user || !chargementInitialFait.current) return;
+    if (!user) { etatDejaVuRef.current = null; return; }
+    const snapshot = JSON.stringify({ domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements });
+    const premiereFois = etatDejaVuRef.current === null;
+    const changementReel = !premiereFois && etatDejaVuRef.current !== snapshot;
+    etatDejaVuRef.current = snapshot;
     if (applicationDistanteEnCours.current) { applicationDistanteEnCours.current = false; return; }
+    if (!changementReel) return;
     localStorage.setItem('cdc_pending_sync', String(Date.now()));
     setSyncEtat((s) => ({ ...s, statut: 'en_cours' }));
+    if (!chargementInitialFait.current) return; // protégé par le marqueur ; la fusion se fera à la fin du chargement initial
     clearTimeout(minuteurSync.current);
     minuteurSync.current = setTimeout(synchroniser, 1000);
     return () => clearTimeout(minuteurSync.current);
