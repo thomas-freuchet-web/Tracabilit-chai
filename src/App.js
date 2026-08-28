@@ -48,6 +48,21 @@ const TRAVAUX = [
   'Contrôle température', 'Dégustation',
 ];
 
+// Ordre de travail : liste de tâches planifiées pour la journée. Les types
+// autres que "libre" sont reliés à une vraie opération de traçabilité —
+// les valider ouvre le formulaire d'enregistrement correspondant, déjà
+// pré-rempli, plutôt que de simplement cocher une case.
+const TYPES_ORDRE = [
+  { id: 'libre', label: 'Tâche libre' },
+  { id: 'ajout', label: 'Ajout de produit' },
+  { id: 'transfert', label: 'Transfert / soutirage' },
+  { id: 'travail', label: 'Travail de cave' },
+  { id: 'controle', label: 'Relevé T° / densité' },
+  { id: 'analyse', label: 'Analyse à prélever' },
+  { id: 'perte', label: 'Sortie de volume' },
+];
+const MOTIFS_PERTE = ['Marc / rafle', 'Lies / bourbes', 'Perte de cave', 'Échantillon', 'Dégustation', 'Sortie vrac', 'Distillation', 'Autre'];
+
 // Motifs de "Sortie de volume" considérés comme déchet viticole (marc, lies,
 // bourbes...) plutôt que perte technique — cumulés dans le panneau "Poubelle
 // viticole" de l'accueil.
@@ -89,6 +104,11 @@ const FORMATS_BOUTEILLE = [
 
 const uid = (prefix) => `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 const today = () => new Date().toISOString().split('T')[0];
+const decalerDate = (dateStr, jours) => {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + jours);
+  return d.toISOString().split('T')[0];
+};
 const nowTime = () => new Date().toTimeString().split(' ')[0].slice(0, 5);
 const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 // Les densités portent trois décimales : un écart de -0,025 doit rester -0,025
@@ -397,6 +417,33 @@ function EmptyState({ titre, texte, action }) {
   );
 }
 
+function LigneOrdreTravail({ ordre, lot, onValider, onModifier, onSupprimer, onAnnuler }) {
+  const typeInfo = TYPES_ORDRE.find((t) => t.id === ordre.type) || TYPES_ORDRE[0];
+  return (
+    <div className={`ordre-ligne ${ordre.fait ? 'fait' : ''}`}>
+      <button className="ordre-check" onClick={() => (ordre.fait ? onAnnuler(ordre.id) : onValider(ordre))}
+        title={ordre.fait ? 'Annuler la validation' : 'Valider'}>
+        {ordre.fait ? '✓' : ''}
+      </button>
+      <div className="ordre-corps">
+        <div className="ordre-titre">{ordre.titre}</div>
+        <div className="muted small">
+          <span className={`op-tag op-${ordre.type}`}>{typeInfo.label}</span>
+          {lot && <> · {lot.code}</>}
+          {ordre.fait && ordre.faitLe && <> · fait à {ordre.faitLe.slice(11, 16)}</>}
+        </div>
+        {ordre.notes && <div className="muted small">{ordre.notes}</div>}
+      </div>
+      {!ordre.fait && (
+        <div className="ordre-actions">
+          <button className="btn btn-ghost btn-sm" onClick={() => onModifier(ordre)} title="Modifier">✏️</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => onSupprimer(ordre.id)} title="Supprimer">✕</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ==========================================================================
    FORMULAIRES (déclarés au niveau module : l'état de saisie est préservé)
    ========================================================================== */
@@ -484,10 +531,11 @@ function ModaleApport({ parcelles, cepages, contenants, lieux, occupation, lots,
   );
 }
 
-function ModaleTransfert({ lot, contenants, lieux, occupation, lots, parcelles, cepages, onValider, onFermer }) {
+function ModaleTransfert({ lot, contenants, lieux, occupation, lots, parcelles, cepages, onValider, onFermer, initial }) {
   const [f, setF] = useState({
     lotSourceId: lot.id, contenantSourceId: (lot.contenants[0] || {}).contenantId || '',
     contenantDestId: '', volume: '', date: today(), motif: 'Transfert', note: '',
+    ...(initial || {}),
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const ligneSrc = lot.contenants.find((c) => c.contenantId === f.contenantSourceId);
@@ -585,7 +633,7 @@ function ModaleTransfert({ lot, contenants, lieux, occupation, lots, parcelles, 
   );
 }
 
-function ModaleAjoutProduit({ lot, produits, contenants, onValider, onFermer, ajout }) {
+function ModaleAjoutProduit({ lot, produits, contenants, onValider, onFermer, ajout, initial }) {
   const [f, setF] = useState(ajout ? {
     lotId: lot.id, produitId: ajout.produitId, quantite: String(ajout.quantite), date: ajout.date,
     contenantId: ajout.contenantId, numeroLotFournisseur: ajout.numeroLotFournisseur || '',
@@ -594,6 +642,7 @@ function ModaleAjoutProduit({ lot, produits, contenants, onValider, onFermer, aj
     lotId: lot.id, produitId: '', quantite: '', date: today(),
     contenantId: (lot.contenants[0] || {}).contenantId || '',
     numeroLotFournisseur: '', dluo: '', notes: '', manipType: '',
+    ...(initial || {}),
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const prod = produits[f.produitId];
@@ -1309,13 +1358,14 @@ function ModaleImportBulletinMulti({ lots, contenants, userId, onValider, onFerm
   );
 }
 
-function ModaleTravail({ lot, contenants, onValider, onFermer, travail }) {
+function ModaleTravail({ lot, contenants, onValider, onFermer, travail, initial }) {
   const [f, setF] = useState(travail ? {
     lotId: lot.id, date: travail.date, heure: travail.heure || nowTime(), action: travail.action,
     contenantId: travail.contenantId, duree: travail.duree || '', notes: travail.notes || '',
   } : {
     lotId: lot.id, date: today(), heure: nowTime(), action: '',
     contenantId: (lot.contenants[0] || {}).contenantId || '', duree: '', notes: '',
+    ...(initial || {}),
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   return (
@@ -1351,7 +1401,7 @@ function ModaleTravail({ lot, contenants, onValider, onFermer, travail }) {
   );
 }
 
-function ModalePerte({ lot, contenants, onValider, onFermer, perte }) {
+function ModalePerte({ lot, contenants, onValider, onFermer, perte, initial }) {
   const [f, setF] = useState(perte ? {
     lotId: lot.id, date: perte.date, volume: String(perte.volume),
     poidsKg: perte.poidsKg !== null && perte.poidsKg !== undefined ? String(perte.poidsKg) : '',
@@ -1359,6 +1409,7 @@ function ModalePerte({ lot, contenants, onValider, onFermer, perte }) {
   } : {
     lotId: lot.id, date: today(), volume: '', poidsKg: '',
     contenantId: (lot.contenants[0] || {}).contenantId || '', motif: '', notes: '',
+    ...(initial || {}),
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const motifPoubelle = MOTIFS_POUBELLE.includes(f.motif);
@@ -1380,7 +1431,7 @@ function ModalePerte({ lot, contenants, onValider, onFermer, perte }) {
       <Field label="Motif">
         <select value={f.motif} onChange={(e) => set('motif', e.target.value)}>
           <option value="">— Sélectionner —</option>
-          {['Marc / rafle', 'Lies / bourbes', 'Perte de cave', 'Échantillon', 'Dégustation', 'Sortie vrac', 'Distillation', 'Autre'].map((m) => <option key={m} value={m}>{m}</option>)}
+          {MOTIFS_PERTE.map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
       </Field>
       {motifPoubelle && (
@@ -1391,6 +1442,111 @@ function ModalePerte({ lot, contenants, onValider, onFermer, perte }) {
       <Field label="Observations" hint="Optionnel"><textarea value={f.notes} onChange={(e) => set('notes', e.target.value)} /></Field>
       <div className="form-actions">
         <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>Enregistrer</button>
+        <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
+      </div>
+    </Modal>
+  );
+}
+
+function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, ordre }) {
+  const [f, setF] = useState(ordre ? {
+    date: ordre.date, type: ordre.type, titre: ordre.titre, lotId: ordre.lotId || '',
+    produitId: ordre.details.produitId || '', quantite: ordre.details.quantite || '',
+    contenantDestId: ordre.details.contenantDestId || '', volume: ordre.details.volume || '',
+    action: ordre.details.action || '', motif: ordre.details.motif || '', notes: ordre.notes || '',
+  } : {
+    date: today(), type: 'libre', titre: '', lotId: '',
+    produitId: '', quantite: '', contenantDestId: '', volume: '', action: '', motif: '', notes: '',
+  });
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+
+  const valider = () => {
+    const details = {
+      produitId: f.produitId, quantite: f.quantite, contenantDestId: f.contenantDestId,
+      volume: f.volume, action: f.action, motif: f.motif,
+    };
+    if (onValider({ ...f, details })) onFermer();
+  };
+
+  return (
+    <Modal title={ordre ? 'Modifier la tâche' : 'Nouvelle tâche'} subtitle="Ordre de travail du jour" onClose={onFermer}>
+      <div className="field-grid">
+        <Field label="Date"><input type="date" value={f.date} onChange={(e) => set('date', e.target.value)} /></Field>
+        <Field label="Type de tâche">
+          <select value={f.type} onChange={(e) => set('type', e.target.value)}>
+            {TYPES_ORDRE.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+          </select>
+        </Field>
+      </div>
+
+      <Field label="Titre" hint="Ce qui sera affiché dans la liste">
+        <input type="text" value={f.titre} onChange={(e) => set('titre', e.target.value)} placeholder="ex : Ajouter les levures sur C3" />
+      </Field>
+
+      {f.type !== 'libre' && (
+        <Field label="Cuve concernée">
+          <select value={f.lotId} onChange={(e) => set('lotId', e.target.value)}>
+            <option value="">— Sélectionner —</option>
+            {lots.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.code} — {(l.contenants || []).map((c) => (contenants[c.contenantId] ? contenants[c.contenantId].nom : '?')).join(', ')}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
+
+      {f.type === 'ajout' && (
+        <div className="field-grid">
+          <Field label="Produit">
+            <select value={f.produitId} onChange={(e) => set('produitId', e.target.value)}>
+              <option value="">— Sélectionner —</option>
+              {Object.values(produits).map((p) => <option key={p.id} value={p.id}>{p.nom}</option>)}
+            </select>
+          </Field>
+          <Field label="Quantité planifiée" hint="Optionnel">
+            <input type="number" step="0.01" value={f.quantite} onChange={(e) => set('quantite', e.target.value)} />
+          </Field>
+        </div>
+      )}
+
+      {f.type === 'transfert' && (
+        <div className="field-grid">
+          <Field label="Cuve de destination" hint="Optionnel">
+            <select value={f.contenantDestId} onChange={(e) => set('contenantDestId', e.target.value)}>
+              <option value="">— À décider —</option>
+              {Object.values(contenants).sort((a, b) => a.nom.localeCompare(b.nom, undefined, { numeric: true }))
+                .map((c) => <option key={c.id} value={c.id}>{c.nom}</option>)}
+            </select>
+          </Field>
+          <Field label="Volume planifié (hL)" hint="Optionnel">
+            <input type="number" step="0.1" value={f.volume} onChange={(e) => set('volume', e.target.value)} />
+          </Field>
+        </div>
+      )}
+
+      {f.type === 'travail' && (
+        <Field label="Action" hint="Optionnel">
+          <select value={f.action} onChange={(e) => set('action', e.target.value)}>
+            <option value="">— Sélectionner —</option>
+            {TRAVAUX.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </Field>
+      )}
+
+      {f.type === 'perte' && (
+        <Field label="Motif" hint="Optionnel">
+          <select value={f.motif} onChange={(e) => set('motif', e.target.value)}>
+            <option value="">— Sélectionner —</option>
+            {MOTIFS_PERTE.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </Field>
+      )}
+
+      <Field label="Notes" hint="Optionnel"><textarea value={f.notes} onChange={(e) => set('notes', e.target.value)} /></Field>
+
+      <div className="form-actions">
+        <button className="btn btn-primary" onClick={valider}>{ordre ? 'Enregistrer' : 'Ajouter la tâche'}</button>
         <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
       </div>
     </Modal>
@@ -2340,6 +2496,7 @@ export default function CahierDeChai() {
   const [produits, setProduits] = useState(() => loadLS('cdc_produits', {}));
   const [lots, setLots] = useState(() => loadLS('cdc_lots', {}));
   const [conditionnements, setConditionnements] = useState(() => loadLS('cdc_conditionnements', []));
+  const [ordresTravail, setOrdresTravail] = useState(() => loadLS('cdc_ordres_travail', []));
 
   useEffect(() => { localStorage.setItem('cdc_domaine', JSON.stringify(domaine)); }, [domaine]);
   useEffect(() => { localStorage.setItem('cdc_lieux', JSON.stringify(lieux)); }, [lieux]);
@@ -2349,6 +2506,7 @@ export default function CahierDeChai() {
   useEffect(() => { localStorage.setItem('cdc_produits', JSON.stringify(produits)); }, [produits]);
   useEffect(() => { localStorage.setItem('cdc_lots', JSON.stringify(lots)); }, [lots]);
   useEffect(() => { localStorage.setItem('cdc_conditionnements', JSON.stringify(conditionnements)); }, [conditionnements]);
+  useEffect(() => { localStorage.setItem('cdc_ordres_travail', JSON.stringify(ordresTravail)); }, [ordresTravail]);
 
   /* ---------- Synchronisation Supabase (mêmes données sur tous les appareils) ----------
      Plusieurs appareils (ou plusieurs personnes sur le même compte) peuvent
@@ -2371,8 +2529,8 @@ export default function CahierDeChai() {
   const etatDejaVuRef = useRef(null); // snapshot du dernier état vu, pour distinguer une vraie saisie du simple montage
 
   useEffect(() => {
-    etatActuelRef.current = { domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements };
-  }, [domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements]);
+    etatActuelRef.current = { domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements, ordresTravail };
+  }, [domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements, ordresTravail]);
 
   const appliquerEtat = (etat) => {
     applicationDistanteEnCours.current = true;
@@ -2384,6 +2542,7 @@ export default function CahierDeChai() {
     setProduits(etat.produits || {});
     setLots(etat.lots || {});
     setConditionnements(etat.conditionnements || []);
+    setOrdresTravail(etat.ordresTravail || []);
   };
 
   // Fusionne l'état local avec ce qui est actuellement sur le serveur (utile
@@ -2432,9 +2591,9 @@ export default function CahierDeChai() {
     if (!user) { chargementInitialFait.current = false; baseCloudRef.current = null; return; }
     let annule = false;
     const enAttente = !!localStorage.getItem('cdc_pending_sync');
-    const localAuMontage = { domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements };
+    const localAuMontage = { domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements, ordresTravail };
     const baseDepart = enAttente
-      ? { domaine: {}, lieux: {}, contenants: {}, cepages: {}, parcelles: {}, produits: {}, lots: {}, conditionnements: [] }
+      ? { domaine: {}, lieux: {}, contenants: {}, cepages: {}, parcelles: {}, produits: {}, lots: {}, conditionnements: [], ordresTravail: [] }
       : localAuMontage;
     (async () => {
       try {
@@ -2467,7 +2626,7 @@ export default function CahierDeChai() {
   // l'état local comme référence de fusion sans précaution.
   useEffect(() => {
     if (!user) { etatDejaVuRef.current = null; return; }
-    const snapshot = JSON.stringify({ domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements });
+    const snapshot = JSON.stringify({ domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements, ordresTravail });
     const premiereFois = etatDejaVuRef.current === null;
     const changementReel = !premiereFois && etatDejaVuRef.current !== snapshot;
     etatDejaVuRef.current = snapshot;
@@ -2480,7 +2639,7 @@ export default function CahierDeChai() {
     minuteurSync.current = setTimeout(synchroniser, 1000);
     return () => clearTimeout(minuteurSync.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements]);
+  }, [user, domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements, ordresTravail]);
 
   // Signal Realtime : dès qu'un autre appareil (ou collègue) vient de
   // sauvegarder, on fusionne tout de suite au lieu d'attendre la prochaine
@@ -2508,11 +2667,30 @@ export default function CahierDeChai() {
   const [paramsGraphe, setParamsGraphe] = useState(['densite', 'temperature']);
   const [recherche, setRecherche] = useState('');
   const [triEntreesVendange, setTriEntreesVendange] = useState('date'); // date | parcelle
+  const [dateOrdre, setDateOrdre] = useState(() => today()); // jour affiché dans l'onglet Ordre de travail
 
   /* ---------- Modales ---------- */
   const [modale, setModale] = useState(null); // {type, payload}
   const ouvrir = (type, payload = {}) => setModale({ type, payload });
   const fermer = () => setModale(null);
+
+  // Valider une tâche de l'ordre du jour : une tâche libre se coche
+  // directement ; une tâche reliée à une vraie opération ouvre le
+  // formulaire d'enregistrement correspondant, pré-rempli avec ce qui avait
+  // été planifié — la tâche n'est marquée faite qu'une fois cette opération
+  // réellement enregistrée (voir avecOrdreLie dans rendreModales).
+  const validerOuOuvrirOrdre = (ordre) => {
+    if (ordre.type === 'libre') { validerOrdreTravail(ordre.id); return; }
+    if (!lots[ordre.lotId]) { alert("La cuve prévue pour cette tâche n'existe plus."); return; }
+    const d = ordre.details || {};
+    const commun = { lotId: ordre.lotId, _ordreId: ordre.id };
+    if (ordre.type === 'ajout') ouvrir('ajoutProduit', { ...commun, initial: { produitId: d.produitId || '', quantite: d.quantite || '' } });
+    else if (ordre.type === 'transfert') ouvrir('transfert', { ...commun, initial: { contenantDestId: d.contenantDestId || '', volume: d.volume || '' } });
+    else if (ordre.type === 'travail') ouvrir('travail', { ...commun, initial: { action: d.action || '' } });
+    else if (ordre.type === 'perte') ouvrir('perte', { ...commun, initial: { motif: d.motif || '' } });
+    else if (ordre.type === 'analyse') ouvrir('analyse', commun);
+    else if (ordre.type === 'controle') ouvrir('controle', commun);
+  };
 
   /* =========================================================================
      DÉRIVÉS
@@ -2534,6 +2712,20 @@ export default function CahierDeChai() {
   const lotsActifs = useMemo(
     () => Object.values(lots).filter((l) => l.statut !== 'archive'),
     [lots]
+  );
+
+  const ordresJour = useMemo(
+    () => ordresTravail
+      .filter((o) => o.date === today())
+      .sort((a, b) => (a.fait === b.fait ? a.creeLe.localeCompare(b.creeLe) : a.fait ? 1 : -1)),
+    [ordresTravail]
+  );
+
+  const ordresDateAffichee = useMemo(
+    () => ordresTravail
+      .filter((o) => o.date === dateOrdre)
+      .sort((a, b) => (a.fait === b.fait ? a.creeLe.localeCompare(b.creeLe) : a.fait ? 1 : -1)),
+    [ordresTravail, dateOrdre]
   );
 
   const stats = useMemo(() => {
@@ -2615,6 +2807,51 @@ export default function CahierDeChai() {
         [lotId]: { ...lot, operations: [...(lot.operations || []), { id: uid('op'), ...operation }] },
       };
     });
+  };
+
+  /* =========================================================================
+     ORDRE DE TRAVAIL — planification du jour, à cocher au fur et à mesure.
+     Les types reliés à une vraie opération (ajout, transfert, travail,
+     contrôle, analyse, perte) ne se cochent pas directement : les valider
+     ouvre le formulaire d'enregistrement correspondant (voir rendreModales),
+     et c'est seulement l'enregistrement réel qui marque la tâche faite —
+     pour que "coché" veuille toujours dire "réellement dans la traçabilité".
+     ========================================================================= */
+
+  const ajouterOrdreTravail = (form) => {
+    if (!form.titre || !form.titre.trim()) { alert('Indique un titre pour cette tâche'); return false; }
+    if (form.type !== 'libre' && !form.lotId) { alert('Choisis la cuve concernée'); return false; }
+    setOrdresTravail((prev) => [...prev, {
+      id: uid('ordre'), date: form.date || today(), type: form.type, titre: form.titre.trim(),
+      lotId: form.type === 'libre' ? '' : form.lotId, details: form.details || {},
+      notes: form.notes || '', fait: false, faitLe: null, auteur: user.id, creeLe: new Date().toISOString(),
+    }]);
+    return true;
+  };
+
+  const modifierOrdreTravail = (id, form) => {
+    if (!form.titre || !form.titre.trim()) { alert('Indique un titre pour cette tâche'); return false; }
+    if (form.type !== 'libre' && !form.lotId) { alert('Choisis la cuve concernée'); return false; }
+    setOrdresTravail((prev) => prev.map((o) => (o.id === id ? {
+      ...o, date: form.date || o.date, type: form.type, titre: form.titre.trim(),
+      lotId: form.type === 'libre' ? '' : form.lotId, details: form.details || {}, notes: form.notes || '',
+    } : o)));
+    return true;
+  };
+
+  const supprimerOrdreTravail = (id) => {
+    if (!window.confirm("Supprimer cette tâche de l'ordre de travail ?")) return;
+    setOrdresTravail((prev) => prev.filter((o) => o.id !== id));
+  };
+
+  // Marque une tâche comme faite : directement pour les tâches libres,
+  // automatiquement après l'enregistrement réel de l'opération liée sinon.
+  const validerOrdreTravail = (id) => {
+    setOrdresTravail((prev) => prev.map((o) => (o.id === id ? { ...o, fait: true, faitLe: new Date().toISOString() } : o)));
+  };
+
+  const reouvrirOrdreTravail = (id) => {
+    setOrdresTravail((prev) => prev.map((o) => (o.id === id ? { ...o, fait: false, faitLe: null } : o)));
   };
 
   /* =========================================================================
@@ -4330,6 +4567,15 @@ export default function CahierDeChai() {
 
   /* ---------- Fonctions de rendu partagées ---------- */
 
+  // Quand une tâche de l'ordre de travail est reliée à une vraie opération
+  // (payload._ordreId), on ne la marque faite qu'une fois l'opération
+  // réellement enregistrée — jamais avant, jamais à la place.
+  const avecOrdreLie = (fn, ordreId) => (f) => {
+    const ok = fn(f);
+    if (ok && ordreId) validerOrdreTravail(ordreId);
+    return ok;
+  };
+
   function rendreModales() {
     if (!modale) return null;
     const { type, payload } = modale;
@@ -4339,23 +4585,26 @@ export default function CahierDeChai() {
           occupation={occupationParContenant} lots={lots} onValider={apporterVendange} onFermer={fermer} />;
       case 'transfert':
         return <ModaleTransfert lot={lots[payload.lotId]} contenants={contenants} lieux={lieux}
-          occupation={occupationParContenant} lots={lots} parcelles={parcelles} cepages={cepages}
-          onValider={executerTransfert} onFermer={fermer} />;
+          occupation={occupationParContenant} lots={lots} parcelles={parcelles} cepages={cepages} initial={payload.initial}
+          onValider={avecOrdreLie(executerTransfert, payload._ordreId)} onFermer={fermer} />;
       case 'ajoutProduit':
-        return <ModaleAjoutProduit lot={lots[payload.lotId]} produits={produits} contenants={contenants} ajout={payload.ajout}
-          onValider={payload.ajout ? (f) => majAjoutProduit(payload.lotId, payload.ajout.id, f) : ajouterProduitAuLot} onFermer={fermer} />;
+        return <ModaleAjoutProduit lot={lots[payload.lotId]} produits={produits} contenants={contenants} ajout={payload.ajout} initial={payload.initial}
+          onValider={payload.ajout ? (f) => majAjoutProduit(payload.lotId, payload.ajout.id, f) : avecOrdreLie(ajouterProduitAuLot, payload._ordreId)} onFermer={fermer} />;
       case 'analyse':
         return <ModaleAnalyse lot={lots[payload.lotId]} contenants={contenants} userId={user.uid} analyse={payload.analyse}
-          onValider={payload.analyse ? (f) => majAnalyse(payload.lotId, payload.analyse.id, f) : enregistrerAnalyse} onFermer={fermer} />;
+          onValider={payload.analyse ? (f) => majAnalyse(payload.lotId, payload.analyse.id, f) : avecOrdreLie(enregistrerAnalyse, payload._ordreId)} onFermer={fermer} />;
       case 'controle':
         return <ModaleControle lot={lots[payload.lotId]} contenants={contenants} controle={payload.controle}
-          onValider={payload.controle ? (f) => majControle(payload.lotId, payload.controle.id, f) : enregistrerControle} onFermer={fermer} />;
+          onValider={payload.controle ? (f) => majControle(payload.lotId, payload.controle.id, f) : avecOrdreLie(enregistrerControle, payload._ordreId)} onFermer={fermer} />;
       case 'travail':
-        return <ModaleTravail lot={lots[payload.lotId]} contenants={contenants} travail={payload.travail}
-          onValider={payload.travail ? (f) => majTravail(payload.lotId, payload.travail.id, f) : enregistrerTravail} onFermer={fermer} />;
+        return <ModaleTravail lot={lots[payload.lotId]} contenants={contenants} travail={payload.travail} initial={payload.initial}
+          onValider={payload.travail ? (f) => majTravail(payload.lotId, payload.travail.id, f) : avecOrdreLie(enregistrerTravail, payload._ordreId)} onFermer={fermer} />;
       case 'perte':
-        return <ModalePerte lot={lots[payload.lotId]} contenants={contenants} perte={payload.perte}
-          onValider={payload.perte ? (f) => majPerte(payload.lotId, payload.perte.id, f) : enregistrerPerte} onFermer={fermer} />;
+        return <ModalePerte lot={lots[payload.lotId]} contenants={contenants} perte={payload.perte} initial={payload.initial}
+          onValider={payload.perte ? (f) => majPerte(payload.lotId, payload.perte.id, f) : avecOrdreLie(enregistrerPerte, payload._ordreId)} onFermer={fermer} />;
+      case 'ordreTravail':
+        return <ModaleOrdreTravail lots={lotsActifs} contenants={contenants} produits={produits} ordre={payload.ordre}
+          onValider={payload.ordre ? (f) => modifierOrdreTravail(payload.ordre.id, f) : ajouterOrdreTravail} onFermer={fermer} />;
       case 'manipulation':
         return <ModaleManipulation lot={lots[payload.lotId]} contenants={contenants} typeInitial={payload.manipType}
           manipulation={payload.manipulation}
@@ -4422,6 +4671,7 @@ export default function CahierDeChai() {
   /* ---------- Application ---------- */
   const NAV = [
     { id: 'accueil', label: 'Vue de la cave', icone: '◱' },
+    { id: 'ordre', label: 'Ordre de travail', icone: '▤' },
     { id: 'releve', label: 'Relevé de cave', icone: '◷' },
     { id: 'cave', label: 'Cuverie & lots', icone: '◧' },
     { id: 'produits', label: 'Produits œnologiques', icone: '◇' },
@@ -4481,6 +4731,32 @@ export default function CahierDeChai() {
                 <h1>Vue de la cave</h1>
                 <p>{stats.nbLots} lot{stats.nbLots > 1 ? 's' : ''} en cave · {stats.contenantsOccupes} contenant{stats.contenantsOccupes > 1 ? 's' : ''} occupé{stats.contenantsOccupes > 1 ? 's' : ''} sur {stats.nbContenants}</p>
               </header>
+
+              <div className="panel">
+                <div className="panel-head">
+                  <h3 className="panel-title">Ordre du jour</h3>
+                  <div className="quick-row" style={{ margin: 0 }}>
+                    <button className="btn btn-outline btn-sm" onClick={() => { setDateOrdre(today()); ouvrir('ordreTravail'); }}>+ Ajouter une tâche</button>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setVue('ordre')}>Tout voir</button>
+                  </div>
+                </div>
+                {ordresJour.length === 0 ? (
+                  <p className="muted small">Aucune tâche prévue aujourd'hui.</p>
+                ) : (
+                  <>
+                    {ordresJour.slice(0, 6).map((o) => (
+                      <LigneOrdreTravail key={o.id} ordre={o} lot={o.lotId ? lots[o.lotId] : null}
+                        onValider={validerOuOuvrirOrdre}
+                        onModifier={(ord) => ouvrir('ordreTravail', { ordre: ord })}
+                        onSupprimer={supprimerOrdreTravail}
+                        onAnnuler={reouvrirOrdreTravail} />
+                    ))}
+                    {ordresJour.length > 6 && (
+                      <p className="muted small" style={{ marginTop: 8 }}>+ {ordresJour.length - 6} autre{ordresJour.length - 6 > 1 ? 's' : ''} — <button className="lien" onClick={() => setVue('ordre')}>tout voir</button></p>
+                    )}
+                  </>
+                )}
+              </div>
 
               <div className="stat-strip">
                 <div className="stat-card"><div className="stat-value">{stats.total} hL</div><div className="stat-label">Volume total en cave</div></div>
@@ -4569,6 +4845,39 @@ export default function CahierDeChai() {
                       </button>
                     ))}
                   </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* ===================== ORDRE DE TRAVAIL ===================== */}
+          {vue === 'ordre' && (
+            <>
+              <header className="page-head">
+                <h1>Ordre de travail</h1>
+                <p>Planifie les tâches du jour : les valider fait entrer automatiquement dans la traçabilité celles qui le concernent (ajout de produit, transfert, analyse...).</p>
+              </header>
+
+              <div className="panel">
+                <div className="panel-head">
+                  <div className="quick-row" style={{ margin: 0 }}>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setDateOrdre((d) => decalerDate(d, -1))}>‹</button>
+                    <input type="date" value={dateOrdre} onChange={(e) => setDateOrdre(e.target.value)} />
+                    <button className="btn btn-ghost btn-sm" onClick={() => setDateOrdre((d) => decalerDate(d, 1))}>›</button>
+                    {dateOrdre !== today() && <button className="btn btn-ghost btn-sm" onClick={() => setDateOrdre(today())}>Aujourd'hui</button>}
+                  </div>
+                  <button className="btn btn-primary btn-sm" onClick={() => ouvrir('ordreTravail')}>+ Ajouter une tâche</button>
+                </div>
+                {ordresDateAffichee.length === 0 ? (
+                  <EmptyState titre="Aucune tâche" texte={`Rien de prévu pour le ${dateOrdre}.`} />
+                ) : (
+                  ordresDateAffichee.map((o) => (
+                    <LigneOrdreTravail key={o.id} ordre={o} lot={o.lotId ? lots[o.lotId] : null}
+                      onValider={validerOuOuvrirOrdre}
+                      onModifier={(ord) => ouvrir('ordreTravail', { ordre: ord })}
+                      onSupprimer={supprimerOrdreTravail}
+                      onAnnuler={reouvrirOrdreTravail} />
+                  ))
                 )}
               </div>
             </>

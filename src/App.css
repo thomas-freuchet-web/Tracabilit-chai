@@ -313,6 +313,19 @@ h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -.01em; }
 .op-travail { background: var(--stone-200); color: var(--cellar-700); }
 .op-phase { background: var(--green-100); color: var(--green-600); }
 
+.ordre-ligne { display: flex; align-items: flex-start; gap: 10px; padding: 9px 5px; border-bottom: 1px solid var(--stone-200); }
+.ordre-ligne:last-child { border-bottom: none; }
+.ordre-ligne.fait .ordre-titre { text-decoration: line-through; color: var(--stone-400); }
+.ordre-check {
+  flex: 0 0 auto; width: 22px; height: 22px; margin-top: 1px; border-radius: 50%;
+  border: 1.5px solid var(--stone-300); background: transparent; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--green-600);
+}
+.ordre-ligne.fait .ordre-check { background: var(--green-100); border-color: var(--green-600); }
+.ordre-corps { flex: 1; min-width: 0; }
+.ordre-titre { font-weight: 600; font-size: 13.5px; }
+.ordre-actions { flex: 0 0 auto; display: flex; gap: 4px; }
+
 .analyse-valeurs { display: flex; flex-wrap: wrap; gap: 5px; }
 
 /* Composition */
