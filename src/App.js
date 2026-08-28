@@ -2813,6 +2813,11 @@ export default function CahierDeChai() {
     [lots]
   );
 
+  const lotsVinification = useMemo(
+    () => lotsActifs.filter((l) => l.phase === 'vinification').sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true })),
+    [lotsActifs]
+  );
+
   const ordresJour = useMemo(
     () => ordresTravail
       .filter((o) => o.date === today())
@@ -2951,6 +2956,14 @@ export default function CahierDeChai() {
 
   const reouvrirOrdreTravail = (id) => {
     setOrdresTravail((prev) => prev.map((o) => (o.id === id ? { ...o, fait: false, faitLe: null } : o)));
+  };
+
+  // Ajout rapide en un clic (ex. relevé ou analyse à prélever sur chaque
+  // cuve en vinification à la mise en place du matin), sans passer par la
+  // modale de saisie.
+  const ajouterOrdreRapide = (type, lot, date) => {
+    const libelle = TYPES_ORDRE.find((t) => t.id === type);
+    ajouterOrdreTravail({ date, type, titre: `${libelle ? libelle.label : type} — ${lot.code}`, lotId: lot.id, details: {} });
   };
 
   /* =========================================================================
@@ -4956,6 +4969,25 @@ export default function CahierDeChai() {
                 <h1>Ordre de travail</h1>
                 <p>Planifie les tâches du jour : les valider fait entrer automatiquement dans la traçabilité celles qui le concernent (ajout de produit, transfert, analyse...).</p>
               </header>
+
+              {lotsVinification.length > 0 && (
+                <div className="panel">
+                  <h3 className="panel-title">Ajout rapide — mise en place</h3>
+                  <p className="muted small">Un clic par cuve pour créer la tâche du {dateOrdre}, sans ouvrir de formulaire.</p>
+                  {[{ type: 'controle', label: 'Relevé T° / densité' }, { type: 'analyse', label: 'Analyse à prélever' }].map(({ type, label }) => (
+                    <div key={type} style={{ marginTop: 8 }}>
+                      <div className="muted small" style={{ marginBottom: 5 }}>{label}</div>
+                      <div className="quick-row">
+                        {lotsVinification.map((l) => (
+                          <button key={l.id} className="btn btn-outline btn-sm" onClick={() => ajouterOrdreRapide(type, l, dateOrdre)}>
+                            + {l.code}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               <div className="panel">
                 <div className="panel-head">
