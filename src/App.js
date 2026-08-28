@@ -63,6 +63,46 @@ const TYPES_ORDRE = [
 ];
 const MOTIFS_PERTE = ['Marc / rafle', 'Lies / bourbes', 'Perte de cave', 'Échantillon', 'Dégustation', 'Sortie vrac', 'Distillation', 'Autre'];
 
+// Calcul d'une quantité à partir d'une dose par rapport au volume de la cuve
+// (ex. "20 g/hL" sur une cuve de 35 hL → 700 g), avec conversion automatique
+// entre les unités de dose courantes en œnologie et l'unité de stock réelle
+// du produit (kg, g, L, mL — "unité" n'a pas de sens à doser au volume).
+const FAMILLE_UNITE_DOSE = { mg: 'masse', g: 'masse', kg: 'masse', mL: 'volume', cL: 'volume', L: 'volume' };
+const FACTEUR_VERS_BASE_DOSE = { mg: 0.001, g: 1, kg: 1000, mL: 1, cL: 10, L: 1000 }; // base : g pour la masse, mL pour le volume
+const DOSES_PROPOSEES = [
+  { id: 'g_hl', num: 'g', den: 'hL', label: 'g / hL' },
+  { id: 'g_l', num: 'g', den: 'L', label: 'g / L' },
+  { id: 'kg_hl', num: 'kg', den: 'hL', label: 'kg / hL' },
+  { id: 'mg_l', num: 'mg', den: 'L', label: 'mg / L' },
+  { id: 'ml_hl', num: 'mL', den: 'hL', label: 'mL / hL' },
+  { id: 'ml_l', num: 'mL', den: 'L', label: 'mL / L' },
+  { id: 'cl_hl', num: 'cL', den: 'hL', label: 'cL / hL' },
+  { id: 'cl_l', num: 'cL', den: 'L', label: 'cL / L' },
+  { id: 'l_hl', num: 'L', den: 'hL', label: 'L / hL' },
+];
+const DOSE_PAR_DEFAUT = { g: 'g_hl', kg: 'kg_hl', mL: 'ml_hl', L: 'l_hl' };
+
+// Doses affichables pour ce produit : uniquement celles de la même famille
+// (masse ou volume) que son unité de stock — pas de conversion masse/volume,
+// qui demanderait une densité qu'on ne connaît pas.
+function dosesDisponiblesPour(uniteProduit) {
+  const famille = FAMILLE_UNITE_DOSE[uniteProduit];
+  if (!famille) return [];
+  return DOSES_PROPOSEES.filter((d) => FAMILLE_UNITE_DOSE[d.num] === famille);
+}
+
+// volumeLotHl : volume de la cuve en hL. Renvoie la quantité dans l'unité de
+// stock du produit, ou null si le calcul n'est pas possible.
+function calculerQuantiteDepuisDose(doseValeur, doseId, volumeLotHl, uniteProduit) {
+  const opt = DOSES_PROPOSEES.find((d) => d.id === doseId);
+  if (!opt || !volumeLotHl || volumeLotHl <= 0) return null;
+  const facteurProduit = FACTEUR_VERS_BASE_DOSE[uniteProduit];
+  if (!facteurProduit) return null;
+  const volumeDansDenominateur = opt.den === 'hL' ? volumeLotHl : volumeLotHl * 100; // hL -> L
+  const quantiteEnBase = doseValeur * volumeDansDenominateur * FACTEUR_VERS_BASE_DOSE[opt.num];
+  return round2(quantiteEnBase / facteurProduit);
+}
+
 // Motifs de "Sortie de volume" considérés comme déchet viticole (marc, lies,
 // bourbes...) plutôt que perte technique — cumulés dans le panneau "Poubelle
 // viticole" de l'accueil.
@@ -651,25 +691,24 @@ function ModaleAjoutProduit({ lot, produits, contenants, onValider, onFermer, aj
   const [f, setF] = useState(ajout ? {
     lotId: lot.id, produitId: ajout.produitId, quantite: String(ajout.quantite), date: ajout.date,
     contenantId: ajout.contenantId, numeroLotFournisseur: ajout.numeroLotFournisseur || '',
-    dluo: ajout.dluo || '', notes: ajout.notes || '', manipType: ajout.manipType || '', dose: '',
+    dluo: ajout.dluo || '', notes: ajout.notes || '', manipType: ajout.manipType || '', dose: '', doseId: '',
   } : {
     lotId: lot.id, produitId: '', quantite: '', date: today(),
     contenantId: (lot.contenants[0] || {}).contenantId || '',
-    numeroLotFournisseur: '', dluo: '', notes: '', manipType: '', dose: '',
+    numeroLotFournisseur: '', dluo: '', notes: '', manipType: '', dose: '', doseId: '',
     ...(initial || {}),
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
-  // Calcule la quantité à partir d'une dose par hL, sur le volume du lot —
-  // pratique pour ne pas avoir à faire le calcul soi-même (ex. 20 g/hL sur
-  // une cuve de 35 hL → 700 g).
-  const setDose = (v) => {
-    const doseNum = Number(v.replace(',', '.'));
-    setF((p) => ({
-      ...p, dose: v,
-      quantite: (v !== '' && !Number.isNaN(doseNum) && volumeLot(lot) > 0) ? String(round2(doseNum * volumeLot(lot))) : p.quantite,
-    }));
-  };
   const prod = produits[f.produitId];
+  const dosesPossibles = prod ? dosesDisponiblesPour(prod.unite) : [];
+  // Calcule la quantité à partir d'une dose (dans l'unité choisie, par hL ou
+  // par L) sur le volume du lot — pratique pour ne pas avoir à faire le
+  // calcul soi-même (ex. 20 g/hL sur une cuve de 35 hL → 700 g).
+  const setDose = (v, doseId) => {
+    const doseNum = Number(String(v).replace(',', '.'));
+    const q = (v !== '' && !Number.isNaN(doseNum)) ? calculerQuantiteDepuisDose(doseNum, doseId, volumeLot(lot), prod.unite) : null;
+    setF((p) => ({ ...p, dose: v, doseId, quantite: q !== null ? String(q) : p.quantite }));
+  };
   const dispo = prod ? stockProduit(prod) : 0;
   const lotsDispo = prod ? stockParLotFournisseur(prod).filter((l) => l.reste > 0) : [];
   const lotChoisi = lotsDispo.find((l) => l.numeroLot === f.numeroLotFournisseur);
@@ -699,6 +738,7 @@ function ModaleAjoutProduit({ lot, produits, contenants, onValider, onFermer, aj
             manipType: p ? p.manipType || '' : '',
             numeroLotFournisseur: dispos.length ? dispos[0].numeroLot : '',
             dluo: dispos.length ? dispos[0].dluo || '' : '',
+            dose: '', doseId: p ? (DOSE_PAR_DEFAUT[p.unite] || '') : '',
           }));
         }}>
           <option value="">— Sélectionner —</option>
@@ -750,15 +790,21 @@ function ModaleAjoutProduit({ lot, produits, contenants, onValider, onFermer, aj
         </p>
       )}
 
-      {prod && volumeLot(lot) > 0 && (
-        <Field label={`Dose souhaitée (${prod.unite}/hL)`} hint={`Calcule automatiquement la quantité pour les ${volumeLot(lot)} hL du lot`}>
-          <input type="number" step="0.01" value={f.dose} onChange={(e) => setDose(e.target.value)} placeholder="ex : 20" />
+      {prod && volumeLot(lot) > 0 && dosesPossibles.length > 0 && (
+        <Field label="Dose souhaitée" hint={`Calcule automatiquement la quantité pour les ${volumeLot(lot)} hL du lot`}>
+          <div className="quick-row" style={{ marginBottom: 0 }}>
+            <input type="number" step="0.01" value={f.dose} style={{ flex: 1, minWidth: 80 }}
+              onChange={(e) => setDose(e.target.value, f.doseId || dosesPossibles[0].id)} placeholder="ex : 20" />
+            <select value={f.doseId || dosesPossibles[0].id} onChange={(e) => setDose(f.dose, e.target.value)}>
+              {dosesPossibles.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+            </select>
+          </div>
         </Field>
       )}
       <div className="field-grid">
         <Field label={`Quantité${prod ? ` (${prod.unite})` : ''}`}
           hint={lotChoisi ? `Reste ${lotChoisi.reste} ${prod.unite} sur ce lot` : ''}>
-          <input type="number" step="0.01" value={f.quantite} onChange={(e) => { set('quantite', e.target.value); set('dose', ''); }} />
+          <input type="number" step="0.01" value={f.quantite} onChange={(e) => setF((p) => ({ ...p, quantite: e.target.value, dose: '', doseId: '' }))} />
         </Field>
         <Field label="Registre réglementaire" hint="Prérempli si le produit y est soumis">
           <select value={f.manipType} onChange={(e) => set('manipType', e.target.value)}>
@@ -1480,25 +1526,28 @@ function ModalePerte({ lot, contenants, onValider, onFermer, perte, initial }) {
 function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, ordre }) {
   const [f, setF] = useState(ordre ? {
     date: ordre.date, type: ordre.type, titre: ordre.titre, lotId: ordre.lotId || '',
-    produitId: ordre.details.produitId || '', quantite: ordre.details.quantite || '', dose: '',
+    produitId: ordre.details.produitId || '', quantite: ordre.details.quantite || '', dose: '', doseId: '',
     contenantDestId: ordre.details.contenantDestId || '', volume: ordre.details.volume || '',
     action: ordre.details.action || '', motif: ordre.details.motif || '', notes: ordre.notes || '',
   } : {
     date: today(), type: 'libre', titre: '', lotId: '',
-    produitId: '', quantite: '', dose: '', contenantDestId: '', volume: '', action: '', motif: '', notes: '',
+    produitId: '', quantite: '', dose: '', doseId: '', contenantDestId: '', volume: '', action: '', motif: '', notes: '',
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const lotSelectionne = lots.find((l) => l.id === f.lotId);
   const prod = produits[f.produitId];
-  // Calcule la quantité planifiée à partir d'une dose par hL, sur le volume
-  // actuel de la cuve choisie.
-  const setDose = (v) => {
-    const doseNum = Number(v.replace(',', '.'));
-    setF((p) => ({
-      ...p, dose: v,
-      quantite: (v !== '' && !Number.isNaN(doseNum) && lotSelectionne && volumeLot(lotSelectionne) > 0)
-        ? String(round2(doseNum * volumeLot(lotSelectionne))) : p.quantite,
-    }));
+  const dosesPossibles = prod ? dosesDisponiblesPour(prod.unite) : [];
+  // Calcule la quantité planifiée à partir d'une dose (unité choisie) sur le
+  // volume actuel de la cuve choisie.
+  const setDose = (v, doseId) => {
+    const doseNum = Number(String(v).replace(',', '.'));
+    const q = (v !== '' && !Number.isNaN(doseNum) && lotSelectionne)
+      ? calculerQuantiteDepuisDose(doseNum, doseId, volumeLot(lotSelectionne), prod.unite) : null;
+    setF((p) => ({ ...p, dose: v, doseId, quantite: q !== null ? String(q) : p.quantite }));
+  };
+  const choisirProduit = (produitId) => {
+    const p = produits[produitId];
+    setF((prev) => ({ ...prev, produitId, dose: '', doseId: p ? (DOSE_PAR_DEFAUT[p.unite] || '') : '' }));
   };
 
   const valider = () => {
@@ -1524,36 +1573,39 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
         <input type="text" value={f.titre} onChange={(e) => set('titre', e.target.value)} placeholder="ex : Ajouter les levures sur C3" />
       </Field>
 
-      {f.type !== 'libre' && (
-        <Field label="Cuve concernée">
-          <select value={f.lotId} onChange={(e) => set('lotId', e.target.value)}>
-            <option value="">— Sélectionner —</option>
-            {lots.map((l) => (
-              <option key={l.id} value={l.id}>
-                {l.code} — {(l.contenants || []).map((c) => (contenants[c.contenantId] ? contenants[c.contenantId].nom : '?')).join(', ')}
-              </option>
-            ))}
-          </select>
-        </Field>
-      )}
+      <Field label="Cuve concernée" hint={f.type === 'libre' ? "Optionnel — pour retrouver cette tâche dans l'historique de la cuve" : undefined}>
+        <select value={f.lotId} onChange={(e) => set('lotId', e.target.value)}>
+          <option value="">{f.type === 'libre' ? '— Aucune —' : '— Sélectionner —'}</option>
+          {lots.map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.code} — {(l.contenants || []).map((c) => (contenants[c.contenantId] ? contenants[c.contenantId].nom : '?')).join(', ')}
+            </option>
+          ))}
+        </select>
+      </Field>
 
       {f.type === 'ajout' && (
         <>
           <Field label="Produit">
-            <select value={f.produitId} onChange={(e) => set('produitId', e.target.value)}>
+            <select value={f.produitId} onChange={(e) => choisirProduit(e.target.value)}>
               <option value="">— Sélectionner —</option>
               {Object.values(produits).map((p) => <option key={p.id} value={p.id}>{p.nom}</option>)}
             </select>
           </Field>
-          <div className="field-grid">
-            <Field label={`Dose souhaitée${prod ? ` (${prod.unite}/hL)` : ' (par hL)'}`}
-              hint={lotSelectionne ? `Calcule la quantité pour les ${volumeLot(lotSelectionne)} hL de la cuve` : 'Choisis la cuve pour calculer'}>
-              <input type="number" step="0.01" value={f.dose} onChange={(e) => setDose(e.target.value)} placeholder="ex : 20" />
+          {prod && dosesPossibles.length > 0 && (
+            <Field label="Dose souhaitée" hint={lotSelectionne ? `Calcule la quantité pour les ${volumeLot(lotSelectionne)} hL de la cuve` : 'Choisis la cuve pour calculer'}>
+              <div className="quick-row" style={{ marginBottom: 0 }}>
+                <input type="number" step="0.01" value={f.dose} style={{ flex: 1, minWidth: 80 }}
+                  onChange={(e) => setDose(e.target.value, f.doseId || dosesPossibles[0].id)} placeholder="ex : 20" />
+                <select value={f.doseId || dosesPossibles[0].id} onChange={(e) => setDose(f.dose, e.target.value)}>
+                  {dosesPossibles.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+                </select>
+              </div>
             </Field>
-            <Field label={`Quantité planifiée${prod ? ` (${prod.unite})` : ''}`} hint="Optionnel">
-              <input type="number" step="0.01" value={f.quantite} onChange={(e) => { set('quantite', e.target.value); set('dose', ''); }} />
-            </Field>
-          </div>
+          )}
+          <Field label={`Quantité planifiée${prod ? ` (${prod.unite})` : ''}`} hint="Optionnel">
+            <input type="number" step="0.01" value={f.quantite} onChange={(e) => setF((p) => ({ ...p, quantite: e.target.value, dose: '', doseId: '' }))} />
+          </Field>
         </>
       )}
 
@@ -2870,7 +2922,7 @@ export default function CahierDeChai() {
     if (form.type !== 'libre' && !form.lotId) { alert('Choisis la cuve concernée'); return false; }
     setOrdresTravail((prev) => [...prev, {
       id: uid('ordre'), date: form.date || today(), type: form.type, titre: form.titre.trim(),
-      lotId: form.type === 'libre' ? '' : form.lotId, details: form.details || {},
+      lotId: form.lotId || '', details: form.details || {},
       notes: form.notes || '', fait: false, faitLe: null, auteur: user.id, creeLe: new Date().toISOString(),
     }]);
     return true;
@@ -2881,7 +2933,7 @@ export default function CahierDeChai() {
     if (form.type !== 'libre' && !form.lotId) { alert('Choisis la cuve concernée'); return false; }
     setOrdresTravail((prev) => prev.map((o) => (o.id === id ? {
       ...o, date: form.date || o.date, type: form.type, titre: form.titre.trim(),
-      lotId: form.type === 'libre' ? '' : form.lotId, details: form.details || {}, notes: form.notes || '',
+      lotId: form.lotId || '', details: form.details || {}, notes: form.notes || '',
     } : o)));
     return true;
   };
@@ -5593,6 +5645,21 @@ export default function CahierDeChai() {
                         </div>
                       )}
                     </div>
+
+                    {ordresTravail.some((o) => o.lotId === lot.id && o.fait && o.type === 'libre') && (
+                      <div className="panel">
+                        <h3 className="panel-title">Tâches réalisées sur cette cuve</h3>
+                        <p className="muted small">Tâches libres de l'ordre du jour, cochées sur cette cuve — disparaît automatiquement si la validation est annulée.</p>
+                        {ordresTravail.filter((o) => o.lotId === lot.id && o.fait && o.type === 'libre')
+                          .sort((a, b) => (b.faitLe || '').localeCompare(a.faitLe || ''))
+                          .map((o) => (
+                            <div className="ref-list-row" key={o.id}>
+                              <span>{o.titre}{o.notes ? <span className="muted small"> — {o.notes}</span> : null}</span>
+                              <span className="muted small">{o.date}{o.faitLe ? ` · ${o.faitLe.slice(11, 16)}` : ''}</span>
+                            </div>
+                          ))}
+                      </div>
+                    )}
 
                     <div className="panel">
                       <h3 className="panel-title">Historique complet, lots d'origine inclus</h3>
