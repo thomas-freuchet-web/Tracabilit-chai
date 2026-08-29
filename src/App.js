@@ -143,13 +143,25 @@ const FORMATS_BOUTEILLE = [
    ========================================================================== */
 
 const uid = (prefix) => `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
-const today = () => new Date().toISOString().split('T')[0];
+// Toujours raisonner en date/heure locale (celle du chai), jamais en UTC —
+// convertir par toISOString() décale le jour calendaire d'un fuseau positif
+// (France) pendant les heures qui suivent minuit local, et cassait aussi le
+// bouton "jour suivant" de l'ordre de travail (le jour +1 pouvait retomber
+// sur le même jour, ou sauter le mauvais nombre de jours).
+const formaterDateLocale = (d) => {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
+const today = () => formaterDateLocale(new Date());
 const decalerDate = (dateStr, jours) => {
-  const d = new Date(dateStr + 'T00:00:00');
+  const [y, m, j] = dateStr.split('-').map(Number);
+  const d = new Date(y, m - 1, j);
   d.setDate(d.getDate() + jours);
-  return d.toISOString().split('T')[0];
+  return formaterDateLocale(d);
 };
 const nowTime = () => new Date().toTimeString().split(' ')[0].slice(0, 5);
+// Convertit un horodatage ISO stocké (UTC) en heure locale HH:MM affichable.
+const heureLocale = (iso) => (iso ? new Date(iso).toTimeString().slice(0, 5) : '');
 const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 // Les densités portent trois décimales : un écart de -0,025 doit rester -0,025
 // et non -0,02. On garde quatre décimales pour tous les écarts de mesure.
@@ -484,7 +496,7 @@ function LigneOrdreTravail({ ordre, lot, produits, contenants, onValider, onModi
           <span className={`op-tag op-${ordre.type}`}>{typeInfo.label}</span>
           {lot && <> · {lot.code}{nomsContenants ? ` (${nomsContenants})` : ''}</>}
           {detail && <> · {detail}</>}
-          {ordre.fait && ordre.faitLe && <> · fait à {ordre.faitLe.slice(11, 16)}</>}
+          {ordre.fait && ordre.faitLe && <> · fait à {heureLocale(ordre.faitLe)}</>}
         </div>
         {ordre.notes && <div className="muted small">{ordre.notes}</div>}
       </div>
@@ -1523,14 +1535,14 @@ function ModalePerte({ lot, contenants, onValider, onFermer, perte, initial }) {
   );
 }
 
-function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, ordre }) {
+function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, ordre, dateInitiale }) {
   const [f, setF] = useState(ordre ? {
     date: ordre.date, type: ordre.type, titre: ordre.titre, lotId: ordre.lotId || '',
     produitId: ordre.details.produitId || '', quantite: ordre.details.quantite || '', dose: '', doseId: '',
     contenantDestId: ordre.details.contenantDestId || '', volume: ordre.details.volume || '',
     action: ordre.details.action || '', motif: ordre.details.motif || '', notes: ordre.notes || '',
   } : {
-    date: today(), type: 'libre', titre: '', lotId: '',
+    date: dateInitiale || today(), type: 'libre', titre: '', lotId: '',
     produitId: '', quantite: '', dose: '', doseId: '', contenantDestId: '', volume: '', action: '', motif: '', notes: '',
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
@@ -4715,7 +4727,7 @@ export default function CahierDeChai() {
         return <ModalePerte lot={lots[payload.lotId]} contenants={contenants} perte={payload.perte} initial={payload.initial}
           onValider={payload.perte ? (f) => majPerte(payload.lotId, payload.perte.id, f) : avecOrdreLie(enregistrerPerte, payload._ordreId)} onFermer={fermer} />;
       case 'ordreTravail':
-        return <ModaleOrdreTravail lots={lotsActifs} contenants={contenants} produits={produits} ordre={payload.ordre}
+        return <ModaleOrdreTravail lots={lotsActifs} contenants={contenants} produits={produits} ordre={payload.ordre} dateInitiale={payload.dateInitiale}
           onValider={payload.ordre ? (f) => modifierOrdreTravail(payload.ordre.id, f) : ajouterOrdreTravail} onFermer={fermer} />;
       case 'manipulation':
         return <ModaleManipulation lot={lots[payload.lotId]} contenants={contenants} typeInitial={payload.manipType}
@@ -4848,7 +4860,7 @@ export default function CahierDeChai() {
                 <div className="panel-head">
                   <h3 className="panel-title">Ordre du jour</h3>
                   <div className="quick-row" style={{ margin: 0 }}>
-                    <button className="btn btn-outline btn-sm" onClick={() => { setDateOrdre(today()); ouvrir('ordreTravail'); }}>+ Ajouter une tâche</button>
+                    <button className="btn btn-outline btn-sm" onClick={() => { setDateOrdre(today()); ouvrir('ordreTravail', { dateInitiale: today() }); }}>+ Ajouter une tâche</button>
                     <button className="btn btn-ghost btn-sm" onClick={() => setVue('ordre')}>Tout voir</button>
                   </div>
                 </div>
@@ -4997,7 +5009,7 @@ export default function CahierDeChai() {
                     <button className="btn btn-ghost btn-sm" onClick={() => setDateOrdre((d) => decalerDate(d, 1))}>›</button>
                     {dateOrdre !== today() && <button className="btn btn-ghost btn-sm" onClick={() => setDateOrdre(today())}>Aujourd'hui</button>}
                   </div>
-                  <button className="btn btn-primary btn-sm" onClick={() => ouvrir('ordreTravail')}>+ Ajouter une tâche</button>
+                  <button className="btn btn-primary btn-sm" onClick={() => ouvrir('ordreTravail', { dateInitiale: dateOrdre })}>+ Ajouter une tâche</button>
                 </div>
                 {ordresDateAffichee.length === 0 ? (
                   <EmptyState titre="Aucune tâche" texte={`Rien de prévu pour le ${dateOrdre}.`} />
@@ -5687,7 +5699,7 @@ export default function CahierDeChai() {
                           .map((o) => (
                             <div className="ref-list-row" key={o.id}>
                               <span>{o.titre}{o.notes ? <span className="muted small"> — {o.notes}</span> : null}</span>
-                              <span className="muted small">{o.date}{o.faitLe ? ` · ${o.faitLe.slice(11, 16)}` : ''}</span>
+                              <span className="muted small">{o.date}{o.faitLe ? ` · ${heureLocale(o.faitLe)}` : ''}</span>
                             </div>
                           ))}
                       </div>
