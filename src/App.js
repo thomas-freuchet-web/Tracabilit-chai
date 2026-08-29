@@ -5324,14 +5324,19 @@ export default function CahierDeChai() {
 
                 {ongletLot === 'controle' && (() => {
                   const ordre = (o) => o.date + (o.moment === 'soir' ? '2' : o.moment === 'matin' ? '1' : '3') + (o.heure || '');
-                  // On fusionne les relevés rapides et les T°/densité issues des analyses de labo
+                  // On fusionne les relevés rapides et les T°/densité issues des analyses de
+                  // labo — mais seulement pour compléter un jour sans relevé rapide : si les
+                  // deux existent pour la même date (ex. relevé + analyse faits le même jour
+                  // depuis l'ordre de travail), l'analyse ne duplique pas la ligne, le relevé
+                  // rapide prévaut.
+                  const datesAvecReleve = new Set(controles.map((o) => o.date));
                   const points = [
                     ...controles.map((o) => ({
                       id: o.id, date: o.date, moment: o.moment, heure: o.heure,
                       temperature: o.temperature, densite: o.densite, notes: o.notes,
                       contenantId: o.contenantId, origine: 'releve',
                     })),
-                    ...analyses.filter((o) => o.valeurs && (o.valeurs.temperature !== undefined || o.valeurs.densite !== undefined))
+                    ...analyses.filter((o) => o.valeurs && (o.valeurs.temperature !== undefined || o.valeurs.densite !== undefined) && !datesAvecReleve.has(o.date))
                       .map((o) => ({
                         id: o.id, date: o.date, moment: 'analyse', heure: o.heure,
                         temperature: o.valeurs.temperature !== undefined ? o.valeurs.temperature : null,
