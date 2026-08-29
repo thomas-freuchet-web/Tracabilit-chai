@@ -100,7 +100,20 @@ function calculerQuantiteDepuisDose(doseValeur, doseId, volumeLotHl, uniteProdui
   if (!facteurProduit) return null;
   const volumeDansDenominateur = opt.den === 'hL' ? volumeLotHl : volumeLotHl * 100; // hL -> L
   const quantiteEnBase = doseValeur * volumeDansDenominateur * FACTEUR_VERS_BASE_DOSE[opt.num];
-  return round2(quantiteEnBase / facteurProduit);
+  return round3(quantiteEnBase / facteurProduit);
+}
+
+// Pour une petite quantité (moins d'un kg ou d'un litre), affiche aussi
+// l'équivalent en grammes/millilitres avec 3 décimales — plus lisible et
+// plus précis qu'un petit nombre de kg/L pour une dose fine. Ne change pas
+// la valeur ni l'unité réellement enregistrées, qui restent celles du
+// produit (nécessaire pour que le stock reste cohérent).
+function formaterPetiteQuantite(valeur, uniteProduit) {
+  if (valeur === null || valeur === undefined || Number.isNaN(valeur) || valeur === 0) return null;
+  const conversions = { kg: 'g', L: 'mL' };
+  const uniteFine = conversions[uniteProduit];
+  if (!uniteFine || Math.abs(valeur) >= 1) return null;
+  return `${round3(valeur * 1000)} ${uniteFine}`;
 }
 
 // Motifs de "Sortie de volume" considérés comme déchet viticole (marc, lies,
@@ -163,6 +176,7 @@ const nowTime = () => new Date().toTimeString().split(' ')[0].slice(0, 5);
 // Convertit un horodatage ISO stocké (UTC) en heure locale HH:MM affichable.
 const heureLocale = (iso) => (iso ? new Date(iso).toTimeString().slice(0, 5) : '');
 const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+const round3 = (n) => Math.round((n + Number.EPSILON) * 1000) / 1000;
 // Les densités portent trois décimales : un écart de -0,025 doit rester -0,025
 // et non -0,02. On garde quatre décimales pour tous les écarts de mesure.
 const roundFin = (n) => Math.round((n + Number.EPSILON) * 10000) / 10000;
@@ -725,6 +739,7 @@ function ModaleAjoutProduit({ lot, produits, contenants, onValider, onFermer, aj
   const lotsDispo = prod ? stockParLotFournisseur(prod).filter((l) => l.reste > 0) : [];
   const lotChoisi = lotsDispo.find((l) => l.numeroLot === f.numeroLotFournisseur);
   const joursDluo = lotChoisi ? joursAvantDluo(lotChoisi.dluo) : null;
+  const equivalentPetit = prod ? formaterPetiteQuantite(Number(f.quantite), prod.unite) : null;
 
   return (
     <Modal title={ajout ? "Modifier l'ajout de produit" : 'Ajout de produit œnologique'} subtitle={`Lot ${lot.code} — le stock sera décrémenté automatiquement`} onClose={onFermer}>
@@ -815,8 +830,8 @@ function ModaleAjoutProduit({ lot, produits, contenants, onValider, onFermer, aj
       )}
       <div className="field-grid">
         <Field label={`Quantité${prod ? ` (${prod.unite})` : ''}`}
-          hint={lotChoisi ? `Reste ${lotChoisi.reste} ${prod.unite} sur ce lot` : ''}>
-          <input type="number" step="0.01" value={f.quantite} onChange={(e) => setF((p) => ({ ...p, quantite: e.target.value, dose: '', doseId: '' }))} />
+          hint={[equivalentPetit ? `= ${equivalentPetit}` : '', lotChoisi ? `Reste ${lotChoisi.reste} ${prod.unite} sur ce lot` : ''].filter(Boolean).join(' · ')}>
+          <input type="number" step="0.001" value={f.quantite} onChange={(e) => setF((p) => ({ ...p, quantite: e.target.value, dose: '', doseId: '' }))} />
         </Field>
         <Field label="Registre réglementaire" hint="Prérempli si le produit y est soumis">
           <select value={f.manipType} onChange={(e) => set('manipType', e.target.value)}>
@@ -1561,6 +1576,7 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
     const p = produits[produitId];
     setF((prev) => ({ ...prev, produitId, dose: '', doseId: p ? (DOSE_PAR_DEFAUT[p.unite] || '') : '' }));
   };
+  const equivalentPetit = prod ? formaterPetiteQuantite(Number(f.quantite), prod.unite) : null;
 
   const valider = () => {
     const details = {
@@ -1615,8 +1631,8 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
               </div>
             </Field>
           )}
-          <Field label={`Quantité planifiée${prod ? ` (${prod.unite})` : ''}`} hint="Optionnel">
-            <input type="number" step="0.01" value={f.quantite} onChange={(e) => setF((p) => ({ ...p, quantite: e.target.value, dose: '', doseId: '' }))} />
+          <Field label={`Quantité planifiée${prod ? ` (${prod.unite})` : ''}`} hint={equivalentPetit ? `= ${equivalentPetit}` : 'Optionnel'}>
+            <input type="number" step="0.001" value={f.quantite} onChange={(e) => setF((p) => ({ ...p, quantite: e.target.value, dose: '', doseId: '' }))} />
           </Field>
         </>
       )}
