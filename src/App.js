@@ -142,6 +142,22 @@ const PRODUITS_REGLEMENTAIRES = {
   coupage: [],
 };
 
+// Une inscription au registre réglementaire peut venir de deux endroits :
+// le bouton "Registre" (opération de type 'manipulation'), ou un ajout de
+// produit dont le champ "Registre réglementaire" a été renseigné (opération
+// de type 'ajout' avec un manipType, ex. ajouter de l'acide tartrique en
+// choisissant "Acidification"). Les deux doivent compter comme une
+// manipulation réglementaire partout où le registre est affiché ou exporté.
+function estManipReglementaire(o) {
+  return o.type === 'manipulation' || (o.type === 'ajout' && !!o.manipType);
+}
+// Ramène les deux formes d'écriture vers des champs d'affichage communs
+// (produit, quantité) pour les tableaux du registre.
+function normaliserManipReglementaire(o) {
+  if (o.type !== 'ajout') return o;
+  return { ...o, produit: o.produitNom, quantiteProduit: `${o.quantite} ${o.unite}` };
+}
+
 const FORMATS_BOUTEILLE = [
   { id: '075', label: 'Bouteille 75 cL', litres: 0.75 },
   { id: '0375', label: 'Demi 37,5 cL', litres: 0.375 },
@@ -2926,7 +2942,7 @@ export default function CahierDeChai() {
   const retardsRegistre = useMemo(() => {
     const out = [];
     Object.values(lots).forEach((l) => {
-      (l.operations || []).filter((o) => o.type === 'manipulation' && o.saisieLe).forEach((o) => {
+      (l.operations || []).filter((o) => estManipReglementaire(o) && o.saisieLe).forEach((o) => {
         const saisieDate = o.saisieLe.slice(0, 10);
         const limite = o.manipType === 'enrichissement' ? o.date : jourOuvrableSuivant(o.date);
         if (saisieDate > limite) out.push({ ...o, _lot: l });
@@ -3290,6 +3306,10 @@ export default function CahierDeChai() {
       numeroLotFournisseur: numeroLotFournisseur || '', dluo: dluo || '',
       manipType: manipType || null, notes: notes || '', auteur: user.id,
       mouvementId,
+      // Un ajout soumis au registre (manipType renseigné) compte comme une
+      // inscription réglementaire au même titre qu'une manipulation saisie
+      // via le bouton "Registre" — voir estManipReglementaire.
+      ...(manipType ? { saisieLe: new Date().toISOString() } : {}),
     });
     return true;
   };
@@ -4323,7 +4343,7 @@ export default function CahierDeChai() {
     Object.keys(MANIP_TYPES).forEach((type) => {
       const lignes = [];
       Object.values(lots).forEach((l) => {
-        (l.operations || []).filter((o) => o.type === 'manipulation' && o.manipType === type).forEach((o) => {
+        (l.operations || []).filter((o) => estManipReglementaire(o) && o.manipType === type).map(normaliserManipReglementaire).forEach((o) => {
           lignes.push({
             'Date': o.date, 'N° cuve / lot barriques': nomContenant(o.contenantId), 'Lot': l.code,
             'Volume concerné (hL)': o.volumeConcerne || '',
@@ -5179,7 +5199,7 @@ export default function CahierDeChai() {
             const opsCompletes = operationsCompletes(lot.id, lots);
             const chaine = lignageLot(lot.id, lots);
             const intrants = opsCompletes.filter((o) => o.type === 'ajout');
-            const manips = opsCompletes.filter((o) => o.type === 'manipulation');
+            const manips = opsCompletes.filter(estManipReglementaire).map(normaliserManipReglementaire);
 
             return (
               <>
@@ -5874,7 +5894,7 @@ export default function CahierDeChai() {
                               <td className="small">{o.quantiteProduit || '—'}</td>
                               <td className="small">{o.volumeConcerne ? `${o.volumeConcerne} hL` : '—'}</td>
                               <td className="small">{o._lotCode}</td>
-                              <td><button className="btn btn-ghost btn-sm" onClick={() => ouvrir('manipulation', { lotId: o._lotId, manipulation: o })}>Modifier</button></td>
+                              <td><button className="btn btn-ghost btn-sm" onClick={() => (o.type === 'ajout' ? ouvrir('ajoutProduit', { lotId: o._lotId, ajout: o }) : ouvrir('manipulation', { lotId: o._lotId, manipulation: o }))}>Modifier</button></td>
                               <td><button className="btn btn-ghost btn-sm" onClick={() => supprimerOperation(o._lotId, o.id)}>✕</button></td>
                             </tr>
                           ))}
@@ -5955,7 +5975,7 @@ export default function CahierDeChai() {
             const q = recherche.trim().toLowerCase();
             const toutes = [];
             Object.values(lots).forEach((l) => {
-              (l.operations || []).filter((o) => o.type === 'manipulation').forEach((o) => toutes.push({ ...o, _lot: l }));
+              (l.operations || []).filter(estManipReglementaire).map(normaliserManipReglementaire).forEach((o) => toutes.push({ ...o, _lot: l }));
             });
             const apports = [];
             Object.values(lots).forEach((l) => {
@@ -6110,7 +6130,7 @@ export default function CahierDeChai() {
                                 {o.critere8515 ? `85/15 : ${o.critere8515}` : ''}
                                 {o.responsable ? `${o.responsable}` : ''}
                               </td>
-                              <td><button className="btn btn-ghost btn-sm" onClick={() => ouvrir('manipulation', { lotId: o._lot.id, manipulation: o })}>Modifier</button></td>
+                              <td><button className="btn btn-ghost btn-sm" onClick={() => (o.type === 'ajout' ? ouvrir('ajoutProduit', { lotId: o._lot.id, ajout: o }) : ouvrir('manipulation', { lotId: o._lot.id, manipulation: o }))}>Modifier</button></td>
                               <td><button className="btn btn-ghost btn-sm" onClick={() => supprimerOperation(o._lot.id, o.id)}>✕</button></td>
                             </tr>
                           ))}

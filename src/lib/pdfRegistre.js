@@ -5,6 +5,18 @@ import { dessinerTableau } from './pdfRecap';
 
 registerStdFonts(Helvetica, HelveticaBold);
 
+// Une inscription au registre réglementaire peut venir du bouton "Registre"
+// (opération de type 'manipulation') ou d'un ajout de produit dont le champ
+// "Registre réglementaire" a été renseigné (opération de type 'ajout' avec
+// un manipType) — les deux doivent apparaître dans cet export.
+function estManipReglementaire(o) {
+  return o.type === 'manipulation' || (o.type === 'ajout' && !!o.manipType);
+}
+function normaliserManipReglementaire(o) {
+  if (o.type !== 'ajout') return o;
+  return { ...o, produit: o.produitNom, quantiteProduit: `${o.quantite} ${o.unite}` };
+}
+
 function nouvelleSection(doc, titre) {
   if (doc.y > doc.page.height - doc.page.margins.bottom - 80) doc.addPage();
   doc.fontSize(13).fillColor('#16130f').text(titre, { underline: true });
@@ -58,7 +70,7 @@ export function genererPdfRegistre(domaine, lots, parcelles, cepages, contenants
     Object.keys(manipTypes).forEach((type) => {
       const liste = [];
       Object.values(lots).forEach((l) => {
-        (l.operations || []).filter((o) => o.type === 'manipulation' && o.manipType === type).forEach((o) => liste.push({ ...o, _lot: l }));
+        (l.operations || []).filter((o) => estManipReglementaire(o) && o.manipType === type).map(normaliserManipReglementaire).forEach((o) => liste.push({ ...o, _lot: l }));
       });
       if (!liste.length) return;
       nouvelleSection(doc, `${manipTypes[type].label} (${liste.length})`);
