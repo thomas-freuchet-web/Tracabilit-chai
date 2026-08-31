@@ -873,13 +873,12 @@ function EcranReleve({ lots, contenants, lieux, parcelles, cepages, onEnregistre
       });
     });
 
+  // Tri par numéro de cuve (nom du contenant, ex. "31" avant "32" avant "33"),
+  // sans regrouper par lieu au préalable — sinon deux cuves numérotées à la
+  // suite mais situées dans des lieux différents se retrouvaient éloignées.
   lignes.sort((a, b) => {
     const ca = contenants[a.contenantId], cb = contenants[b.contenantId];
     if (!ca || !cb) return 0;
-    if (ca.lieuId !== cb.lieuId) {
-      const la = lieux[ca.lieuId], lb = lieux[cb.lieuId];
-      return (la ? la.nom : '').localeCompare(lb ? lb.nom : '');
-    }
     return ca.nom.localeCompare(cb.nom, undefined, { numeric: true });
   });
 
@@ -2841,9 +2840,19 @@ export default function CahierDeChai() {
     [lots]
   );
 
+  // Trie les lots par numéro de cuve (nom du premier contenant, ex. "31" avant
+  // "32" avant "33") plutôt que par code de lot — bien plus utile pour
+  // retrouver une cuve rapidement dans l'ordre du jour ou le relevé de cave.
+  const lotsActifsTries = useMemo(() => {
+    const nomPremierContenant = (l) => {
+      const c = contenants[(l.contenants[0] || {}).contenantId];
+      return c ? c.nom : l.code;
+    };
+    return [...lotsActifs].sort((a, b) => nomPremierContenant(a).localeCompare(nomPremierContenant(b), undefined, { numeric: true }));
+  }, [lotsActifs, contenants]);
   const lotsVinification = useMemo(
-    () => lotsActifs.filter((l) => l.phase === 'vinification').sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true })),
-    [lotsActifs]
+    () => lotsActifsTries.filter((l) => l.phase === 'vinification'),
+    [lotsActifsTries]
   );
 
   const ordresJour = useMemo(
@@ -2991,7 +3000,8 @@ export default function CahierDeChai() {
   // modale de saisie.
   const ajouterOrdreRapide = (type, lot, date) => {
     const libelle = TYPES_ORDRE.find((t) => t.id === type);
-    ajouterOrdreTravail({ date, type, titre: `${libelle ? libelle.label : type} — ${lot.code}`, lotId: lot.id, details: {} });
+    const noms = (lot.contenants || []).map((c) => (contenants[c.contenantId] ? contenants[c.contenantId].nom : '?')).join(', ');
+    ajouterOrdreTravail({ date, type, titre: `${libelle ? libelle.label : type} — ${noms || lot.code}`, lotId: lot.id, details: {} });
   };
 
   /* =========================================================================
@@ -4743,7 +4753,7 @@ export default function CahierDeChai() {
         return <ModalePerte lot={lots[payload.lotId]} contenants={contenants} perte={payload.perte} initial={payload.initial}
           onValider={payload.perte ? (f) => majPerte(payload.lotId, payload.perte.id, f) : avecOrdreLie(enregistrerPerte, payload._ordreId)} onFermer={fermer} />;
       case 'ordreTravail':
-        return <ModaleOrdreTravail lots={lotsActifs} contenants={contenants} produits={produits} ordre={payload.ordre} dateInitiale={payload.dateInitiale}
+        return <ModaleOrdreTravail lots={lotsActifsTries} contenants={contenants} produits={produits} ordre={payload.ordre} dateInitiale={payload.dateInitiale}
           onValider={payload.ordre ? (f) => modifierOrdreTravail(payload.ordre.id, f) : ajouterOrdreTravail} onFermer={fermer} />;
       case 'manipulation':
         return <ModaleManipulation lot={lots[payload.lotId]} contenants={contenants} typeInitial={payload.manipType}
@@ -5008,7 +5018,7 @@ export default function CahierDeChai() {
                       <div className="quick-row">
                         {lotsVinification.map((l) => (
                           <button key={l.id} className="btn btn-outline btn-sm" onClick={() => ajouterOrdreRapide(type, l, dateOrdre)}>
-                            + {l.code}
+                            + {(l.contenants || []).map((c) => (contenants[c.contenantId] ? contenants[c.contenantId].nom : '?')).join(', ')} ({l.code})
                           </button>
                         ))}
                       </div>
