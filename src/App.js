@@ -1569,11 +1569,13 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
   const [f, setF] = useState(ordre ? {
     date: ordre.date, type: ordre.type, titre: ordre.titre, lotId: ordre.lotId || '',
     produitId: ordre.details.produitId || '', quantite: ordre.details.quantite || '', dose: '', doseId: '',
+    numeroLotFournisseur: ordre.details.numeroLotFournisseur || '',
     contenantDestId: ordre.details.contenantDestId || '', volume: ordre.details.volume || '',
     action: ordre.details.action || '', motif: ordre.details.motif || '', notes: ordre.notes || '',
   } : {
     date: dateInitiale || today(), type: 'libre', titre: '', lotId: '',
-    produitId: '', quantite: '', dose: '', doseId: '', contenantDestId: '', volume: '', action: '', motif: '', notes: '',
+    produitId: '', quantite: '', dose: '', doseId: '', numeroLotFournisseur: '',
+    contenantDestId: '', volume: '', action: '', motif: '', notes: '',
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const lotSelectionne = lots.find((l) => l.id === f.lotId);
@@ -1587,16 +1589,21 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
       ? calculerQuantiteDepuisDose(doseNum, doseId, volumeLot(lotSelectionne), prod.unite) : null;
     setF((p) => ({ ...p, dose: v, doseId, quantite: q !== null ? String(q) : p.quantite }));
   };
+  const lotsFournisseurDispo = prod ? stockParLotFournisseur(prod).filter((l) => l.reste > 0) : [];
   const choisirProduit = (produitId) => {
     const p = produits[produitId];
-    setF((prev) => ({ ...prev, produitId, dose: '', doseId: p ? (DOSE_PAR_DEFAUT[p.unite] || '') : '' }));
+    const dispos = p ? stockParLotFournisseur(p).filter((l) => l.reste > 0) : [];
+    setF((prev) => ({
+      ...prev, produitId, dose: '', doseId: p ? (DOSE_PAR_DEFAUT[p.unite] || '') : '',
+      numeroLotFournisseur: dispos.length ? dispos[0].numeroLot : '',
+    }));
   };
   const equivalentPetit = prod ? formaterPetiteQuantite(Number(f.quantite), prod.unite) : null;
 
   const valider = () => {
     const details = {
-      produitId: f.produitId, quantite: f.quantite, contenantDestId: f.contenantDestId,
-      volume: f.volume, action: f.action, motif: f.motif,
+      produitId: f.produitId, quantite: f.quantite, numeroLotFournisseur: f.numeroLotFournisseur,
+      contenantDestId: f.contenantDestId, volume: f.volume, action: f.action, motif: f.motif,
     };
     if (onValider({ ...f, details })) onFermer();
   };
@@ -1635,6 +1642,21 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
               {Object.values(produits).map((p) => <option key={p.id} value={p.id}>{p.nom}</option>)}
             </select>
           </Field>
+          {prod && (
+            <Field label="Lot fournisseur" hint="Classés par DLUO la plus proche — utilise le plus ancien en premier">
+              {lotsFournisseurDispo.length === 0 ? (
+                <p className="inline-note warn">Aucun lot en stock pour ce produit.</p>
+              ) : (
+                <select value={f.numeroLotFournisseur} onChange={(e) => set('numeroLotFournisseur', e.target.value)}>
+                  {lotsFournisseurDispo.map((l) => (
+                    <option key={l.numeroLot} value={l.numeroLot}>
+                      {l.numeroLot} — reste {l.reste} {prod.unite}{l.dluo ? ` · DLUO ${l.dluo}` : ''}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </Field>
+          )}
           {prod && dosesPossibles.length > 0 && (
             <Field label="Dose souhaitée" hint={lotSelectionne ? `Calcule la quantité pour les ${volumeLot(lotSelectionne)} hL de la cuve` : 'Choisis la cuve pour calculer'}>
               <div className="quick-row" style={{ marginBottom: 0 }}>
@@ -2826,7 +2848,18 @@ export default function CahierDeChai() {
     if (!lots[ordre.lotId]) { alert("La cuve prévue pour cette tâche n'existe plus."); return; }
     const d = ordre.details || {};
     const commun = { lotId: ordre.lotId, _ordreId: ordre.id };
-    if (ordre.type === 'ajout') ouvrir('ajoutProduit', { ...commun, initial: { produitId: d.produitId || '', quantite: d.quantite || '' } });
+    if (ordre.type === 'ajout') {
+      const prod = produits[d.produitId];
+      const lotsDispo = prod ? stockParLotFournisseur(prod).filter((l) => l.reste > 0) : [];
+      // Le lot fournisseur planifié est peut-être épuisé depuis — on retombe
+      // sur le lot à la DLUO la plus proche, comme le fait le formulaire réel.
+      const lotChoisi = lotsDispo.find((l) => l.numeroLot === d.numeroLotFournisseur) || lotsDispo[0];
+      ouvrir('ajoutProduit', { ...commun, initial: {
+        produitId: d.produitId || '', quantite: d.quantite || '',
+        numeroLotFournisseur: lotChoisi ? lotChoisi.numeroLot : '',
+        dluo: lotChoisi ? lotChoisi.dluo || '' : '',
+      } });
+    }
     else if (ordre.type === 'transfert') ouvrir('transfert', { ...commun, initial: { contenantDestId: d.contenantDestId || '', volume: d.volume || '' } });
     else if (ordre.type === 'travail') ouvrir('travail', { ...commun, initial: { action: d.action || '' } });
     else if (ordre.type === 'perte') ouvrir('perte', { ...commun, initial: { motif: d.motif || '' } });
