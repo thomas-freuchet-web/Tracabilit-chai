@@ -729,16 +729,17 @@ function ModaleTransfert({ lot, contenants, lieux, occupation, lots, parcelles, 
   );
 }
 
-function ModaleAjoutProduit({ lot, produits, contenants, onValider, onFermer, ajout, initial }) {
-  const [f, setF] = useState(ajout ? {
+function ModaleAjoutProduit(props) {
+  return props.ajout ? <ModaleAjoutProduitEdition {...props} /> : <ModaleAjoutProduitCreation {...props} />;
+}
+
+/* Corriger un ajout déjà enregistré reste un formulaire à un seul produit —
+   une correction porte toujours sur une seule opération. */
+function ModaleAjoutProduitEdition({ lot, produits, contenants, onValider, onFermer, ajout }) {
+  const [f, setF] = useState({
     lotId: lot.id, produitId: ajout.produitId, quantite: String(ajout.quantite), date: ajout.date,
     contenantId: ajout.contenantId, numeroLotFournisseur: ajout.numeroLotFournisseur || '',
     dluo: ajout.dluo || '', notes: ajout.notes || '', manipType: ajout.manipType || '', dose: '', doseId: '',
-  } : {
-    lotId: lot.id, produitId: '', quantite: '', date: today(),
-    contenantId: (lot.contenants[0] || {}).contenantId || '',
-    numeroLotFournisseur: '', dluo: '', notes: '', manipType: '', dose: '', doseId: '',
-    ...(initial || {}),
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const prod = produits[f.produitId];
@@ -866,6 +867,187 @@ function ModaleAjoutProduit({ lot, produits, contenants, onValider, onFermer, aj
 
       <div className="form-actions">
         <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>{ajout ? 'Enregistrer' : "Enregistrer l'ajout"}</button>
+        <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* Ajouter plusieurs produits d'un coup sur la même cuve (ex. levures +
+   nutriment + SO2 au débourbage) : une ligne par produit, chacune avec son
+   propre calcul de dose et son propre lot fournisseur — la date et le
+   contenant sont communs à tout le lot d'ajouts. Chaque ligne valide
+   devient un ajout séparé (donc un mouvement de stock et une éventuelle
+   inscription au registre chacun), exactement comme si le formulaire avait
+   été rempli plusieurs fois de suite. */
+function ModaleAjoutProduitCreation({ lot, produits, contenants, onValider, onFermer, initial }) {
+  const ligneVide = (depart) => {
+    const p = depart && depart.produitId ? produits[depart.produitId] : null;
+    const dispos = p ? stockParLotFournisseur(p).filter((l) => l.reste > 0) : [];
+    return {
+      id: uid('ln'), produitId: '', quantite: '', dose: '', doseId: '',
+      numeroLotFournisseur: dispos.length ? dispos[0].numeroLot : '',
+      dluo: dispos.length ? dispos[0].dluo || '' : '', manipType: p ? p.manipType || '' : '',
+      ...(depart || {}),
+    };
+  };
+  const [f, setF] = useState({
+    date: today(), contenantId: (lot.contenants[0] || {}).contenantId || '', notes: '',
+    lignes: [ligneVide(initial)],
+  });
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const setLigne = (id, champs) => setF((p) => ({ ...p, lignes: p.lignes.map((l) => (l.id === id ? { ...l, ...champs } : l)) }));
+  const ajouterLigne = () => setF((p) => ({ ...p, lignes: [...p.lignes, ligneVide()] }));
+  const retirerLigne = (id) => setF((p) => ({ ...p, lignes: p.lignes.filter((l) => l.id !== id) }));
+
+  const choisirProduitLigne = (id, produitId) => {
+    const p = produits[produitId];
+    const dispos = p ? stockParLotFournisseur(p).filter((l) => l.reste > 0) : [];
+    setLigne(id, {
+      produitId, manipType: p ? p.manipType || '' : '',
+      numeroLotFournisseur: dispos.length ? dispos[0].numeroLot : '',
+      dluo: dispos.length ? dispos[0].dluo || '' : '',
+      dose: '', doseId: p ? (DOSE_PAR_DEFAUT[p.unite] || '') : '',
+    });
+  };
+  const setDoseLigne = (ligne, v, doseId) => {
+    const p = produits[ligne.produitId];
+    const doseNum = Number(String(v).replace(',', '.'));
+    const q = (v !== '' && !Number.isNaN(doseNum) && p) ? calculerQuantiteDepuisDose(doseNum, doseId, volumeLot(lot), p.unite) : null;
+    setLigne(ligne.id, { dose: v, doseId, quantite: q !== null ? String(q) : ligne.quantite });
+  };
+
+  const lignesValides = f.lignes.filter((l) => l.produitId && Number(l.quantite) > 0);
+  const validerTout = () => {
+    if (lignesValides.length === 0) { alert('Ajoute au moins un produit avec une quantité.'); return; }
+    lignesValides.forEach((l) => onValider({
+      lotId: lot.id, date: f.date, contenantId: f.contenantId, notes: f.notes,
+      produitId: l.produitId, quantite: l.quantite,
+      numeroLotFournisseur: l.numeroLotFournisseur, dluo: l.dluo, manipType: l.manipType,
+    }));
+    onFermer();
+  };
+
+  return (
+    <Modal title="Ajout de produit œnologique" subtitle={`Lot ${lot.code} — le stock sera décrémenté automatiquement`} onClose={onFermer} large>
+      <div className="field-grid">
+        <Field label="Date"><input type="date" value={f.date} onChange={(e) => set('date', e.target.value)} /></Field>
+        <Field label="Contenant concerné">
+          <select value={f.contenantId} onChange={(e) => set('contenantId', e.target.value)}>
+            {lot.contenants.map((c) => (
+              <option key={c.contenantId} value={c.contenantId}>
+                {contenants[c.contenantId] ? contenants[c.contenantId].nom : '?'} ({c.volume} hL)
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+
+      {f.lignes.map((ligne, i) => {
+        const prod = produits[ligne.produitId];
+        const dosesPossibles = prod ? dosesDisponiblesPour(prod.unite) : [];
+        const dispo = prod ? stockProduit(prod) : 0;
+        const lotsDispo = prod ? stockParLotFournisseur(prod).filter((l) => l.reste > 0) : [];
+        const lotChoisi = lotsDispo.find((l) => l.numeroLot === ligne.numeroLotFournisseur);
+        const joursDluo = lotChoisi ? joursAvantDluo(lotChoisi.dluo) : null;
+        const equivalentPetit = prod ? formaterPetiteQuantite(Number(ligne.quantite), prod.unite) : null;
+        return (
+          <div className="stat-card" key={ligne.id} style={{ marginBottom: 12 }}>
+            <div className="panel-head" style={{ marginBottom: 8 }}>
+              <span className="muted small">Produit {i + 1}</span>
+              {f.lignes.length > 1 && (
+                <button className="btn btn-ghost btn-sm" title="Retirer ce produit" onClick={() => retirerLigne(ligne.id)}>✕</button>
+              )}
+            </div>
+
+            <Field label="Produit">
+              <select value={ligne.produitId} onChange={(e) => choisirProduitLigne(ligne.id, e.target.value)}>
+                <option value="">— Sélectionner —</option>
+                {CATEGORIES_PRODUIT.map((cat) => {
+                  const liste = Object.values(produits).filter((p) => p.categorie === cat);
+                  if (!liste.length) return null;
+                  return (
+                    <optgroup key={cat} label={cat}>
+                      {liste.map((p) => <option key={p.id} value={p.id}>{p.nom} — {stockProduit(p)} {p.unite} en stock</option>)}
+                    </optgroup>
+                  );
+                })}
+              </select>
+            </Field>
+            {prod && (
+              <p className={`inline-note ${dispo <= 0 ? 'warn' : ''}`}>
+                Stock disponible : {dispo} {prod.unite}
+                {prod.manipType ? ` · soumis au registre « ${MANIP_TYPES[prod.manipType].label} »` : ''}
+              </p>
+            )}
+
+            {prod && (
+              <Field label="Lot fournisseur utilisé" hint="Classés par DLUO la plus proche — utilise le plus ancien en premier">
+                {lotsDispo.length === 0 ? (
+                  <p className="inline-note warn">Aucun lot en stock pour ce produit. Enregistre d'abord une entrée en stock.</p>
+                ) : (
+                  <select value={ligne.numeroLotFournisseur} onChange={(e) => {
+                    const l = lotsDispo.find((x) => x.numeroLot === e.target.value);
+                    setLigne(ligne.id, { numeroLotFournisseur: e.target.value, dluo: l ? l.dluo || '' : '' });
+                  }}>
+                    {lotsDispo.map((l) => (
+                      <option key={l.numeroLot} value={l.numeroLot}>
+                        {l.numeroLot} — reste {l.reste} {prod.unite}{l.dluo ? ` · DLUO ${l.dluo}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </Field>
+            )}
+            {lotChoisi && joursDluo !== null && joursDluo <= 60 && (
+              <p className="inline-note warn">
+                {joursDluo < 0 ? `Ce lot est périmé depuis ${-joursDluo} jour(s).` : `DLUO dans ${joursDluo} jour(s).`}
+              </p>
+            )}
+
+            {prod && volumeLot(lot) > 0 && dosesPossibles.length > 0 && (
+              <Field label="Dose souhaitée" hint={`Calcule automatiquement la quantité pour les ${volumeLot(lot)} hL du lot`}>
+                <div className="quick-row" style={{ marginBottom: 0 }}>
+                  <input type="number" step="0.01" value={ligne.dose} style={{ flex: 1, minWidth: 80 }}
+                    onChange={(e) => setDoseLigne(ligne, e.target.value, ligne.doseId || dosesPossibles[0].id)} placeholder="ex : 20" />
+                  <select value={ligne.doseId || dosesPossibles[0].id} onChange={(e) => setDoseLigne(ligne, ligne.dose, e.target.value)}>
+                    {dosesPossibles.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+                  </select>
+                </div>
+              </Field>
+            )}
+            <div className="field-grid">
+              <Field label={`Quantité${prod ? ` (${prod.unite})` : ''}`}
+                hint={[equivalentPetit ? `= ${equivalentPetit}` : '', lotChoisi ? `Reste ${lotChoisi.reste} ${prod.unite} sur ce lot` : ''].filter(Boolean).join(' · ')}>
+                <input type="number" step="0.001" value={ligne.quantite} onChange={(e) => setLigne(ligne.id, { quantite: e.target.value, dose: '', doseId: '' })} />
+              </Field>
+              <Field label="Registre réglementaire" hint="Prérempli si le produit y est soumis">
+                <select value={ligne.manipType} onChange={(e) => setLigne(ligne.id, { manipType: e.target.value })}>
+                  <option value="">Aucun</option>
+                  {Object.keys(MANIP_TYPES).map((t) => <option key={t} value={t}>{MANIP_TYPES[t].label}</option>)}
+                </select>
+              </Field>
+            </div>
+            {prod && volumeLot(lot) > 0 && Number(ligne.quantite) > 0 && (
+              <p className="inline-note">
+                Dose appliquée : <strong>{round2(Number(ligne.quantite) / volumeLot(lot))} {prod.unite}/hL</strong>
+                {' '}(sur {volumeLot(lot)} hL)
+              </p>
+            )}
+          </div>
+        );
+      })}
+
+      <div className="form-actions" style={{ marginBottom: 16 }}>
+        <button className="btn btn-outline btn-sm" onClick={ajouterLigne}>+ Ajouter un autre produit</button>
+      </div>
+
+      <Field label="Notes" hint="Communes à tous les produits ajoutés ci-dessus"><textarea value={f.notes} onChange={(e) => set('notes', e.target.value)} /></Field>
+
+      <div className="form-actions">
+        <button className="btn btn-primary" onClick={validerTout}>
+          {lignesValides.length > 1 ? `Enregistrer les ${lignesValides.length} ajouts` : "Enregistrer l'ajout"}
+        </button>
         <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
       </div>
     </Modal>
