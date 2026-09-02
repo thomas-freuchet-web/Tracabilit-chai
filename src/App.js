@@ -432,7 +432,7 @@ function ColorDot({ couleur, title }) {
   return <span className={`color-dot color-dot-${cls}`} title={title || COULEURS[couleur] || couleur} />;
 }
 
-function Jauge({ volume, capacite, couleur, size = 'md' }) {
+function Jauge({ volume, capacite, couleur, size = 'md', forme = 'cuve' }) {
   const uidRef = React.useId();
   const dims = { sm: { w: 24, h: 38 }, md: { w: 34, h: 54 }, lg: { w: 52, h: 82 } }[size] || { w: 34, h: 54 };
   const ratio = capacite > 0 ? Math.min(volume / capacite, 1) : (volume > 0 ? 1 : 0);
@@ -440,8 +440,34 @@ function Jauge({ volume, capacite, couleur, size = 'md' }) {
     : couleur === 'rose' ? 'var(--bordeaux-400)'
     : couleur === 'mixte' ? 'var(--steel-500)'
     : 'var(--bordeaux-500)';
-  const h = Math.max(ratio * (dims.h - 5), volume > 0 ? 2 : 0);
   const clipId = `jauge-${uidRef}`;
+
+  if (forme === 'barrique' || forme === 'lot_barriques') {
+    const { w, h: H } = dims;
+    const cx = w / 2;
+    const capHalf = w * 0.30, bulgeHalf = w * 0.47;
+    const topY = H * 0.04, bottomY = H * 0.96, midY = H / 2;
+    const chemin = `M ${cx - capHalf},${topY}` +
+      ` C ${cx - bulgeHalf},${topY + (midY - topY) * 0.15} ${cx - bulgeHalf},${midY - (midY - topY) * 0.5} ${cx - bulgeHalf},${midY}` +
+      ` C ${cx - bulgeHalf},${midY + (bottomY - midY) * 0.5} ${cx - bulgeHalf},${bottomY - (bottomY - midY) * 0.15} ${cx - capHalf},${bottomY}` +
+      ` L ${cx + capHalf},${bottomY}` +
+      ` C ${cx + bulgeHalf},${bottomY - (bottomY - midY) * 0.15} ${cx + bulgeHalf},${midY + (bottomY - midY) * 0.5} ${cx + bulgeHalf},${midY}` +
+      ` C ${cx + bulgeHalf},${midY - (midY - topY) * 0.5} ${cx + bulgeHalf},${topY + (midY - topY) * 0.15} ${cx + capHalf},${topY} Z`;
+    const h = Math.max(ratio * (H - 4), volume > 0 ? 2 : 0);
+    return (
+      <svg width={w} height={H} viewBox={`0 0 ${w} ${H}`} aria-hidden="true" className="jauge">
+        <path d={chemin} fill="var(--stone-100)" stroke="var(--stone-300)" strokeWidth="1.5" />
+        <clipPath id={clipId}><path d={chemin} /></clipPath>
+        <g clipPath={`url(#${clipId})`}>
+          <rect x="0" y={H - h} width={w} height={h} fill={fill} opacity="0.9" />
+        </g>
+        <line x1={cx - bulgeHalf * 0.96} y1={midY - (midY - topY) * 0.55} x2={cx + bulgeHalf * 0.96} y2={midY - (midY - topY) * 0.55} stroke="var(--stone-300)" strokeWidth="1" opacity="0.8" />
+        <line x1={cx - bulgeHalf * 0.96} y1={midY + (bottomY - midY) * 0.55} x2={cx + bulgeHalf * 0.96} y2={midY + (bottomY - midY) * 0.55} stroke="var(--stone-300)" strokeWidth="1" opacity="0.8" />
+      </svg>
+    );
+  }
+
+  const h = Math.max(ratio * (dims.h - 5), volume > 0 ? 2 : 0);
   return (
     <svg width={dims.w} height={dims.h} viewBox={`0 0 ${dims.w} ${dims.h}`} aria-hidden="true" className="jauge">
       <rect x="1.5" y="1.5" width={dims.w - 3} height={dims.h - 3} rx={dims.w * 0.16}
@@ -2236,32 +2262,43 @@ function ModaleEditContenant({ contenant, onValider, onFermer }) {
 
 function ModaleContenants({ lieux, lieuInitial, onValider, onFermer }) {
   const premier = lieuInitial || Object.keys(lieux)[0] || '';
+  const lieuDepart = lieux[premier];
   const [f, setF] = useState({
-    lieuId: premier, mode: 'serie', prefixe: 'C', debut: '1', fin: '10',
+    lieuId: premier, type: (lieuDepart && lieuDepart.type === 'chai_barriques') ? 'barrique' : 'cuve',
+    modeQuantite: 'serie', prefixe: 'C', debut: '1', fin: '10',
     nom: '', capacite: '', materiau: '', tonnelier: '', annee: '',
     nbBarriques: '12', capaciteUnitaire: '2.25',
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
-  const lieu = lieux[f.lieuId];
-  const estBarrique = lieu && lieu.type === 'chai_barriques';
+  const estBarrique = f.type !== 'cuve';
 
   return (
     <Modal title="Ajouter des contenants" onClose={onFermer}>
-      <Field label="Lieu">
-        <select value={f.lieuId} onChange={(e) => set('lieuId', e.target.value)}>
-          {Object.values(lieux).map((l) => <option key={l.id} value={l.id}>{l.nom}</option>)}
-        </select>
-      </Field>
+      <div className="field-grid">
+        <Field label="Lieu">
+          <select value={f.lieuId} onChange={(e) => set('lieuId', e.target.value)}>
+            {Object.values(lieux).map((l) => <option key={l.id} value={l.id}>{l.nom}</option>)}
+          </select>
+        </Field>
+        <Field label="Type de contenant">
+          <select value={f.type} onChange={(e) => set('type', e.target.value)}>
+            <option value="cuve">Cuve</option>
+            <option value="barrique">Barrique</option>
+            <option value="lot_barriques">Lot de barriques (suivi groupé)</option>
+          </select>
+        </Field>
+      </div>
 
-      <Field label="Mode de création">
-        <select value={f.mode} onChange={(e) => set('mode', e.target.value)}>
-          <option value="serie">Série numérotée (ex : C1 à C20)</option>
-          <option value="unite">Un seul contenant</option>
-          {estBarrique && <option value="lot_barriques">Lot de barriques (suivi groupé)</option>}
-        </select>
-      </Field>
+      {f.type !== 'lot_barriques' && (
+        <Field label="Mode de création">
+          <select value={f.modeQuantite} onChange={(e) => set('modeQuantite', e.target.value)}>
+            <option value="serie">Série numérotée (ex : C1 à C20)</option>
+            <option value="unite">Un seul contenant</option>
+          </select>
+        </Field>
+      )}
 
-      {f.mode === 'serie' && (
+      {f.type !== 'lot_barriques' && f.modeQuantite === 'serie' && (
         <>
           <div className="field-grid">
             <Field label="Préfixe" hint="Peut rester vide"><input type="text" value={f.prefixe} onChange={(e) => set('prefixe', e.target.value)} /></Field>
@@ -2274,14 +2311,14 @@ function ModaleContenants({ lieux, lieuInitial, onValider, onFermer }) {
         </>
       )}
 
-      {f.mode === 'unite' && (
+      {f.type !== 'lot_barriques' && f.modeQuantite === 'unite' && (
         <div className="field-grid">
           <Field label="Nom"><input type="text" value={f.nom} onChange={(e) => set('nom', e.target.value)} /></Field>
           <Field label="Capacité (hL)"><input type="number" step="0.01" value={f.capacite} onChange={(e) => set('capacite', e.target.value)} /></Field>
         </div>
       )}
 
-      {f.mode === 'lot_barriques' && (
+      {f.type === 'lot_barriques' && (
         <>
           <Field label="Nom du lot" hint="ex : Lot 2024 Tonnelier X"><input type="text" value={f.nom} onChange={(e) => set('nom', e.target.value)} /></Field>
           <div className="field-grid">
@@ -4044,11 +4081,23 @@ export default function CahierDeChai() {
 
   const ajouterContenants = (f) => {
     if (!f.lieuId) { alert('Choisis un lieu'); return false; }
-    const lieu = lieux[f.lieuId];
-    const estBarrique = lieu && lieu.type === 'chai_barriques';
+    // Le type (cuve, barrique, lot de barriques) est choisi explicitement
+    // dans le formulaire — indépendamment du type du lieu qui l'accueille,
+    // un chai peut très bien mélanger cuves et barriques.
+    const estBarrique = f.type === 'barrique';
     const nouveaux = {};
 
-    if (f.mode === 'serie') {
+    if (f.type === 'lot_barriques') {
+      const nb = parseInt(f.nbBarriques, 10);
+      if (!f.nom || !nb || nb <= 0) { alert('Nom du lot et nombre de barriques obligatoires'); return false; }
+      const id = uid('ct');
+      nouveaux[id] = {
+        id, nom: f.nom, lieuId: f.lieuId, type: 'lot_barriques',
+        nbBarriques: nb, capaciteUnitaire: Number(f.capaciteUnitaire) || 2.25,
+        capacite: round2(nb * (Number(f.capaciteUnitaire) || 2.25)),
+        materiau: f.materiau || 'Chêne', tonnelier: f.tonnelier || '', annee: f.annee || '',
+      };
+    } else if (f.modeQuantite === 'serie') {
       const debut = parseInt(f.debut, 10), fin = parseInt(f.fin, 10);
       if (isNaN(debut) || isNaN(fin) || fin < debut) { alert('Plage de numéros invalide'); return false; }
       if (fin - debut > 500) { alert('Plage trop large (500 max)'); return false; }
@@ -4065,16 +4114,6 @@ export default function CahierDeChai() {
           annee: estBarrique ? (f.annee || '') : '',
         };
       }
-    } else if (f.mode === 'lot_barriques') {
-      const nb = parseInt(f.nbBarriques, 10);
-      if (!f.nom || !nb || nb <= 0) { alert('Nom du lot et nombre de barriques obligatoires'); return false; }
-      const id = uid('ct');
-      nouveaux[id] = {
-        id, nom: f.nom, lieuId: f.lieuId, type: 'lot_barriques',
-        nbBarriques: nb, capaciteUnitaire: Number(f.capaciteUnitaire) || 2.25,
-        capacite: round2(nb * (Number(f.capaciteUnitaire) || 2.25)),
-        materiau: f.materiau || 'Chêne', tonnelier: f.tonnelier || '', annee: f.annee || '',
-      };
     } else {
       if (!f.nom) { alert('Nom obligatoire'); return false; }
       const id = uid('ct');
@@ -5220,7 +5259,8 @@ export default function CahierDeChai() {
                     {lotsActifs.slice(0, 8).map((l) => (
                       <button className="lot-card" key={l.id} onClick={() => ouvrirLot(l.id)}>
                         <Jauge volume={volumeLot(l)} capacite={(l.contenants || []).reduce((s, c) => s + ((contenants[c.contenantId] || {}).capacite || 0), 0)}
-                          couleur={couleurLot(l, parcelles, cepages)} size="lg" />
+                          couleur={couleurLot(l, parcelles, cepages)} size="lg"
+                          forme={(contenants[(l.contenants[0] || {}).contenantId] || {}).type} />
                         <div className="lot-card-body">
                           <div className="lot-card-code"><ColorDot couleur={couleurLot(l, parcelles, cepages)} />{l.code}</div>
                           <div className="muted small">{(l.contenants || []).map((c) => nomContenant(c.contenantId)).join(', ')}</div>
@@ -5341,7 +5381,7 @@ export default function CahierDeChai() {
                               <button key={c.id} className={`contenant-card ${l ? 'plein' : 'vide'}`}
                                 onClick={() => l && ouvrirLot(l.id)} disabled={!l}>
                                 <Jauge volume={o ? o.volume : 0} capacite={c.capacite}
-                                  couleur={l ? couleurLot(l, parcelles, cepages) : null} size="md" />
+                                  couleur={l ? couleurLot(l, parcelles, cepages) : null} size="md" forme={c.type} />
                                 <div className="contenant-body">
                                   <div className="contenant-nom">{c.nom}</div>
                                   {l ? (
@@ -5437,7 +5477,8 @@ export default function CahierDeChai() {
                   <div className="lot-head-metrique">
                     <Jauge volume={volumeLot(lot)}
                       capacite={(lot.contenants || []).reduce((s, c) => s + ((contenants[c.contenantId] || {}).capacite || 0), 0)}
-                      couleur={couleur} size="lg" />
+                      couleur={couleur} size="lg"
+                      forme={(contenants[(lot.contenants[0] || {}).contenantId] || {}).type} />
                     <div>
                       <div className="metric-value">{volumeLot(lot)} hL</div>
                       <div className="metric-label">Volume actuel</div>
