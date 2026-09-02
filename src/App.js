@@ -538,6 +538,8 @@ function LigneOrdreTravail({ ordre, lot, produits, contenants, onValider, onModi
     detail = d.action;
   } else if (ordre.type === 'perte' && d.motif) {
     detail = d.motif;
+  } else if (ordre.type === 'controle' && d.moment) {
+    detail = d.moment === 'matin' ? 'Matin' : d.moment === 'soir' ? 'Soir' : 'Contrôle supplémentaire';
   }
   const nomsContenants = lot ? (lot.contenants || []).map((c) => (contenants[c.contenantId] ? contenants[c.contenantId].nom : '?')).join(', ') : '';
   return (
@@ -1252,7 +1254,7 @@ function EcranReleve({ lots, contenants, lieux, parcelles, cepages, onEnregistre
   );
 }
 
-function ModaleControle({ lot, contenants, onValider, onFermer, controle }) {
+function ModaleControle({ lot, contenants, onValider, onFermer, controle, initial }) {
   const [f, setF] = useState(controle ? {
     lotId: lot.id, date: controle.date, moment: controle.moment || 'matin',
     contenantId: controle.contenantId, temperature: controle.temperature !== null && controle.temperature !== undefined ? String(controle.temperature) : '',
@@ -1263,6 +1265,7 @@ function ModaleControle({ lot, contenants, onValider, onFermer, controle }) {
     moment: new Date().getHours() < 14 ? 'matin' : 'soir',
     contenantId: (lot.contenants[0] || {}).contenantId || '',
     temperature: '', densite: '', notes: '',
+    ...(initial || {}),
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
 
@@ -1779,11 +1782,12 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
     produitId: ordre.details.produitId || '', quantite: ordre.details.quantite || '', dose: '', doseId: '',
     numeroLotFournisseur: ordre.details.numeroLotFournisseur || '',
     contenantDestId: ordre.details.contenantDestId || '', volume: ordre.details.volume || '',
-    action: ordre.details.action || '', motif: ordre.details.motif || '', notes: ordre.notes || '',
+    action: ordre.details.action || '', motif: ordre.details.motif || '', moment: ordre.details.moment || '',
+    notes: ordre.notes || '',
   } : {
     date: dateInitiale || today(), type: 'libre', titre: '', lotId: '',
     produitId: '', quantite: '', dose: '', doseId: '', numeroLotFournisseur: '',
-    contenantDestId: '', volume: '', action: '', motif: '', notes: '',
+    contenantDestId: '', volume: '', action: '', motif: '', moment: '', notes: '',
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const lotSelectionne = lots.find((l) => l.id === f.lotId);
@@ -1812,6 +1816,7 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
     const details = {
       produitId: f.produitId, quantite: f.quantite, numeroLotFournisseur: f.numeroLotFournisseur,
       contenantDestId: f.contenantDestId, volume: f.volume, action: f.action, motif: f.motif,
+      moment: f.moment,
     };
     if (onValider({ ...f, details })) onFermer();
   };
@@ -1911,6 +1916,17 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
           <select value={f.motif} onChange={(e) => set('motif', e.target.value)}>
             <option value="">— Sélectionner —</option>
             {MOTIFS_PERTE.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </Field>
+      )}
+
+      {f.type === 'controle' && (
+        <Field label="Moment" hint="Optionnel">
+          <select value={f.moment} onChange={(e) => set('moment', e.target.value)}>
+            <option value="">— Sélectionner —</option>
+            <option value="matin">Matin</option>
+            <option value="soir">Soir</option>
+            <option value="extra">Contrôle supplémentaire</option>
           </select>
         </Field>
       )}
@@ -3083,7 +3099,7 @@ export default function CahierDeChai() {
     else if (ordre.type === 'travail') ouvrir('travail', { ...commun, initial: { action: d.action || '' } });
     else if (ordre.type === 'perte') ouvrir('perte', { ...commun, initial: { motif: d.motif || '' } });
     else if (ordre.type === 'analyse') ouvrir('analyse', commun);
-    else if (ordre.type === 'controle') ouvrir('controle', commun);
+    else if (ordre.type === 'controle') ouvrir('controle', d.moment ? { ...commun, initial: { moment: d.moment } } : commun);
   };
 
   /* =========================================================================
@@ -5018,7 +5034,7 @@ export default function CahierDeChai() {
         return <ModaleAnalyse lot={lots[payload.lotId]} contenants={contenants} userId={user.uid} analyse={payload.analyse}
           onValider={payload.analyse ? (f) => majAnalyse(payload.lotId, payload.analyse.id, f) : avecOrdreLie(enregistrerAnalyse, payload._ordreId)} onFermer={fermer} />;
       case 'controle':
-        return <ModaleControle lot={lots[payload.lotId]} contenants={contenants} controle={payload.controle}
+        return <ModaleControle lot={lots[payload.lotId]} contenants={contenants} controle={payload.controle} initial={payload.initial}
           onValider={payload.controle ? (f) => majControle(payload.lotId, payload.controle.id, f) : avecOrdreLie(enregistrerControle, payload._ordreId)} onFermer={fermer} />;
       case 'travail':
         return <ModaleTravail lot={lots[payload.lotId]} contenants={contenants} travail={payload.travail} initial={payload.initial}
