@@ -529,9 +529,11 @@ function LigneOrdreTravail({ ordre, lot, produits, contenants, onValider, onModi
   const typeInfo = TYPES_ORDRE.find((t) => t.id === ordre.type) || TYPES_ORDRE[0];
   const d = ordre.details || {};
   let detail = '';
-  if (ordre.type === 'ajout' && d.produitId && produits[d.produitId]) {
-    const p = produits[d.produitId];
-    detail = `${p.nom}${d.quantite ? ` · ${d.quantite} ${p.unite}` : ''}`;
+  if (ordre.type === 'ajout') {
+    const lignes = d.lignes || (d.produitId ? [{ produitId: d.produitId, quantite: d.quantite }] : []);
+    detail = lignes.filter((l) => l.produitId && produits[l.produitId])
+      .map((l) => `${produits[l.produitId].nom}${l.quantite ? ` · ${l.quantite} ${produits[l.produitId].unite}` : ''}`)
+      .join(', ');
   } else if (ordre.type === 'transfert' && d.contenantDestId && contenants[d.contenantDestId]) {
     detail = `→ ${contenants[d.contenantDestId].nom}${d.volume ? ` · ${d.volume} hL` : ''}`;
   } else if (ordre.type === 'travail' && d.action) {
@@ -919,9 +921,12 @@ function ModaleAjoutProduitCreation({ lot, produits, contenants, onValider, onFe
       ...(depart || {}),
     };
   };
+  // "initial" prévoit un seul produit (objet) ou plusieurs à la fois
+  // (tableau, ex. venant d'une tâche de l'ordre de travail qui en planifiait
+  // plusieurs) — chacun devient sa propre ligne, déjà pré-remplie.
   const [f, setF] = useState({
     date: today(), contenantId: (lot.contenants[0] || {}).contenantId || '', notes: '',
-    lignes: [ligneVide(initial)],
+    lignes: (Array.isArray(initial) ? initial : [initial]).map((depart) => ligneVide(depart)),
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const setLigne = (id, champs) => setF((p) => ({ ...p, lignes: p.lignes.map((l) => (l.id === id ? { ...l, ...champs } : l)) }));
@@ -1777,44 +1782,55 @@ function ModalePerte({ lot, contenants, onValider, onFermer, perte, initial }) {
 }
 
 function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, ordre, dateInitiale }) {
+  // Une tâche "ajout de produit" peut planifier plusieurs produits à la fois
+  // (comme le vrai formulaire d'ajout) — chacun avec son propre produit,
+  // dose et lot fournisseur. Compatible avec les tâches déjà enregistrées
+  // sous l'ancienne forme à un seul produit (details.produitId direct).
+  const ligneVideOrdre = (depart) => ({ id: uid('ln'), produitId: '', quantite: '', dose: '', doseId: '', numeroLotFournisseur: '', ...(depart || {}) });
+  const lignesDepuisDetails = (details) => details.lignes
+    || (details.produitId ? [{ produitId: details.produitId, quantite: details.quantite, numeroLotFournisseur: details.numeroLotFournisseur }] : []);
+
   const [f, setF] = useState(ordre ? {
     date: ordre.date, type: ordre.type, titre: ordre.titre, lotId: ordre.lotId || '',
-    produitId: ordre.details.produitId || '', quantite: ordre.details.quantite || '', dose: '', doseId: '',
-    numeroLotFournisseur: ordre.details.numeroLotFournisseur || '',
+    lignes: (() => {
+      const l = lignesDepuisDetails(ordre.details || {});
+      return l.length ? l.map(ligneVideOrdre) : [ligneVideOrdre()];
+    })(),
     contenantDestId: ordre.details.contenantDestId || '', volume: ordre.details.volume || '',
     action: ordre.details.action || '', motif: ordre.details.motif || '', moment: ordre.details.moment || '',
     notes: ordre.notes || '',
   } : {
     date: dateInitiale || today(), type: 'libre', titre: '', lotId: '',
-    produitId: '', quantite: '', dose: '', doseId: '', numeroLotFournisseur: '',
+    lignes: [ligneVideOrdre()],
     contenantDestId: '', volume: '', action: '', motif: '', moment: '', notes: '',
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const lotSelectionne = lots.find((l) => l.id === f.lotId);
-  const prod = produits[f.produitId];
-  const dosesPossibles = prod ? dosesDisponiblesPour(prod.unite) : [];
-  // Calcule la quantité planifiée à partir d'une dose (unité choisie) sur le
-  // volume actuel de la cuve choisie.
-  const setDose = (v, doseId) => {
-    const doseNum = Number(String(v).replace(',', '.'));
-    const q = (v !== '' && !Number.isNaN(doseNum) && lotSelectionne)
-      ? calculerQuantiteDepuisDose(doseNum, doseId, volumeLot(lotSelectionne), prod.unite) : null;
-    setF((p) => ({ ...p, dose: v, doseId, quantite: q !== null ? String(q) : p.quantite }));
-  };
-  const lotsFournisseurDispo = prod ? stockParLotFournisseur(prod).filter((l) => l.reste > 0) : [];
-  const choisirProduit = (produitId) => {
+
+  const setLigne = (id, champs) => setF((p) => ({ ...p, lignes: p.lignes.map((l) => (l.id === id ? { ...l, ...champs } : l)) }));
+  const ajouterLigneProduit = () => setF((p) => ({ ...p, lignes: [...p.lignes, ligneVideOrdre()] }));
+  const retirerLigneProduit = (id) => setF((p) => ({ ...p, lignes: p.lignes.filter((l) => l.id !== id) }));
+  const choisirProduitLigne = (id, produitId) => {
     const p = produits[produitId];
-    const dispos = p ? stockParLotFournisseur(p).filter((l) => l.reste > 0) : [];
-    setF((prev) => ({
-      ...prev, produitId, dose: '', doseId: p ? (DOSE_PAR_DEFAUT[p.unite] || '') : '',
+    const dispos = p ? stockParLotFournisseur(p).filter((x) => x.reste > 0) : [];
+    setLigne(id, {
+      produitId, dose: '', doseId: p ? (DOSE_PAR_DEFAUT[p.unite] || '') : '',
       numeroLotFournisseur: dispos.length ? dispos[0].numeroLot : '',
-    }));
+    });
   };
-  const equivalentPetit = prod ? formaterPetiteQuantite(Number(f.quantite), prod.unite) : null;
+  // Calcule la quantité planifiée d'une ligne à partir d'une dose (unité
+  // choisie) sur le volume actuel de la cuve choisie.
+  const setDoseLigne = (ligne, v, doseId) => {
+    const p = produits[ligne.produitId];
+    const doseNum = Number(String(v).replace(',', '.'));
+    const q = (v !== '' && !Number.isNaN(doseNum) && lotSelectionne && p)
+      ? calculerQuantiteDepuisDose(doseNum, doseId, volumeLot(lotSelectionne), p.unite) : null;
+    setLigne(ligne.id, { dose: v, doseId, quantite: q !== null ? String(q) : ligne.quantite });
+  };
 
   const valider = () => {
     const details = {
-      produitId: f.produitId, quantite: f.quantite, numeroLotFournisseur: f.numeroLotFournisseur,
+      lignes: f.lignes.filter((l) => l.produitId).map((l) => ({ produitId: l.produitId, quantite: l.quantite, numeroLotFournisseur: l.numeroLotFournisseur })),
       contenantDestId: f.contenantDestId, volume: f.volume, action: f.action, motif: f.motif,
       moment: f.moment,
     };
@@ -1849,41 +1865,60 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
 
       {f.type === 'ajout' && (
         <>
-          <Field label="Produit">
-            <select value={f.produitId} onChange={(e) => choisirProduit(e.target.value)}>
-              <option value="">— Sélectionner —</option>
-              {Object.values(produits).map((p) => <option key={p.id} value={p.id}>{p.nom}</option>)}
-            </select>
-          </Field>
-          {prod && (
-            <Field label="Lot fournisseur" hint="Classés par DLUO la plus proche — utilise le plus ancien en premier">
-              {lotsFournisseurDispo.length === 0 ? (
-                <p className="inline-note warn">Aucun lot en stock pour ce produit.</p>
-              ) : (
-                <select value={f.numeroLotFournisseur} onChange={(e) => set('numeroLotFournisseur', e.target.value)}>
-                  {lotsFournisseurDispo.map((l) => (
-                    <option key={l.numeroLot} value={l.numeroLot}>
-                      {l.numeroLot} — reste {l.reste} {prod.unite}{l.dluo ? ` · DLUO ${l.dluo}` : ''}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </Field>
-          )}
-          {prod && dosesPossibles.length > 0 && (
-            <Field label="Dose souhaitée" hint={lotSelectionne ? `Calcule la quantité pour les ${volumeLot(lotSelectionne)} hL de la cuve` : 'Choisis la cuve pour calculer'}>
-              <div className="quick-row" style={{ marginBottom: 0 }}>
-                <input type="number" step="0.01" value={f.dose} style={{ flex: 1, minWidth: 80 }}
-                  onChange={(e) => setDose(e.target.value, f.doseId || dosesPossibles[0].id)} placeholder="ex : 20" />
-                <select value={f.doseId || dosesPossibles[0].id} onChange={(e) => setDose(f.dose, e.target.value)}>
-                  {dosesPossibles.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
-                </select>
+          {f.lignes.map((ligne, i) => {
+            const prodLigne = produits[ligne.produitId];
+            const dosesPossiblesLigne = prodLigne ? dosesDisponiblesPour(prodLigne.unite) : [];
+            const lotsFournisseurLigne = prodLigne ? stockParLotFournisseur(prodLigne).filter((l) => l.reste > 0) : [];
+            const equivalentPetitLigne = prodLigne ? formaterPetiteQuantite(Number(ligne.quantite), prodLigne.unite) : null;
+            return (
+              <div className="stat-card" key={ligne.id} style={{ marginBottom: 10 }}>
+                <div className="panel-head" style={{ marginBottom: 8 }}>
+                  <span className="muted small">Produit {i + 1}</span>
+                  {f.lignes.length > 1 && (
+                    <button className="btn btn-ghost btn-sm" title="Retirer ce produit" onClick={() => retirerLigneProduit(ligne.id)}>✕</button>
+                  )}
+                </div>
+                <Field label="Produit">
+                  <select value={ligne.produitId} onChange={(e) => choisirProduitLigne(ligne.id, e.target.value)}>
+                    <option value="">— Sélectionner —</option>
+                    {Object.values(produits).map((p) => <option key={p.id} value={p.id}>{p.nom}</option>)}
+                  </select>
+                </Field>
+                {prodLigne && (
+                  <Field label="Lot fournisseur" hint="Classés par DLUO la plus proche — utilise le plus ancien en premier">
+                    {lotsFournisseurLigne.length === 0 ? (
+                      <p className="inline-note warn">Aucun lot en stock pour ce produit.</p>
+                    ) : (
+                      <select value={ligne.numeroLotFournisseur} onChange={(e) => setLigne(ligne.id, { numeroLotFournisseur: e.target.value })}>
+                        {lotsFournisseurLigne.map((l) => (
+                          <option key={l.numeroLot} value={l.numeroLot}>
+                            {l.numeroLot} — reste {l.reste} {prodLigne.unite}{l.dluo ? ` · DLUO ${l.dluo}` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </Field>
+                )}
+                {prodLigne && dosesPossiblesLigne.length > 0 && (
+                  <Field label="Dose souhaitée" hint={lotSelectionne ? `Calcule la quantité pour les ${volumeLot(lotSelectionne)} hL de la cuve` : 'Choisis la cuve pour calculer'}>
+                    <div className="quick-row" style={{ marginBottom: 0 }}>
+                      <input type="number" step="0.01" value={ligne.dose} style={{ flex: 1, minWidth: 80 }}
+                        onChange={(e) => setDoseLigne(ligne, e.target.value, ligne.doseId || dosesPossiblesLigne[0].id)} placeholder="ex : 20" />
+                      <select value={ligne.doseId || dosesPossiblesLigne[0].id} onChange={(e) => setDoseLigne(ligne, ligne.dose, e.target.value)}>
+                        {dosesPossiblesLigne.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+                      </select>
+                    </div>
+                  </Field>
+                )}
+                <Field label={`Quantité planifiée${prodLigne ? ` (${prodLigne.unite})` : ''}`} hint={equivalentPetitLigne ? `= ${equivalentPetitLigne}` : 'Optionnel'}>
+                  <input type="number" step="0.001" value={ligne.quantite} onChange={(e) => setLigne(ligne.id, { quantite: e.target.value, dose: '', doseId: '' })} />
+                </Field>
               </div>
-            </Field>
-          )}
-          <Field label={`Quantité planifiée${prod ? ` (${prod.unite})` : ''}`} hint={equivalentPetit ? `= ${equivalentPetit}` : 'Optionnel'}>
-            <input type="number" step="0.001" value={f.quantite} onChange={(e) => setF((p) => ({ ...p, quantite: e.target.value, dose: '', doseId: '' }))} />
-          </Field>
+            );
+          })}
+          <div className="form-actions" style={{ marginBottom: 12 }}>
+            <button className="btn btn-outline btn-sm" onClick={ajouterLigneProduit}>+ Ajouter un autre produit</button>
+          </div>
         </>
       )}
 
@@ -3084,16 +3119,23 @@ export default function CahierDeChai() {
     const d = ordre.details || {};
     const commun = { lotId: ordre.lotId, _ordreId: ordre.id };
     if (ordre.type === 'ajout') {
-      const prod = produits[d.produitId];
-      const lotsDispo = prod ? stockParLotFournisseur(prod).filter((l) => l.reste > 0) : [];
-      // Le lot fournisseur planifié est peut-être épuisé depuis — on retombe
-      // sur le lot à la DLUO la plus proche, comme le fait le formulaire réel.
-      const lotChoisi = lotsDispo.find((l) => l.numeroLot === d.numeroLotFournisseur) || lotsDispo[0];
-      ouvrir('ajoutProduit', { ...commun, initial: {
-        produitId: d.produitId || '', quantite: d.quantite || '',
-        numeroLotFournisseur: lotChoisi ? lotChoisi.numeroLot : '',
-        dluo: lotChoisi ? lotChoisi.dluo || '' : '',
-      } });
+      // Une tâche peut planifier plusieurs produits (details.lignes) ou,
+      // pour une tâche déjà enregistrée avant ce changement, un seul produit
+      // directement dans details.
+      const lignesPlan = d.lignes || (d.produitId ? [{ produitId: d.produitId, quantite: d.quantite, numeroLotFournisseur: d.numeroLotFournisseur }] : []);
+      const lignesInitiales = lignesPlan.map((l) => {
+        const prod = produits[l.produitId];
+        const lotsDispo = prod ? stockParLotFournisseur(prod).filter((x) => x.reste > 0) : [];
+        // Le lot fournisseur planifié est peut-être épuisé depuis — on
+        // retombe sur le lot à la DLUO la plus proche, comme le formulaire réel.
+        const lotChoisi = lotsDispo.find((x) => x.numeroLot === l.numeroLotFournisseur) || lotsDispo[0];
+        return {
+          produitId: l.produitId || '', quantite: l.quantite || '',
+          numeroLotFournisseur: lotChoisi ? lotChoisi.numeroLot : '',
+          dluo: lotChoisi ? lotChoisi.dluo || '' : '',
+        };
+      });
+      ouvrir('ajoutProduit', { ...commun, initial: lignesInitiales.length ? lignesInitiales : undefined });
     }
     else if (ordre.type === 'transfert') ouvrir('transfert', { ...commun, initial: { contenantDestId: d.contenantDestId || '', volume: d.volume || '' } });
     else if (ordre.type === 'travail') ouvrir('travail', { ...commun, initial: { action: d.action || '' } });
@@ -3282,10 +3324,10 @@ export default function CahierDeChai() {
   // Ajout rapide en un clic (ex. relevé ou analyse à prélever sur chaque
   // cuve en vinification à la mise en place du matin), sans passer par la
   // modale de saisie.
-  const ajouterOrdreRapide = (type, lot, date) => {
+  const ajouterOrdreRapide = (type, lot, date, details = {}, suffixeTitre = '') => {
     const libelle = TYPES_ORDRE.find((t) => t.id === type);
     const noms = (lot.contenants || []).map((c) => (contenants[c.contenantId] ? contenants[c.contenantId].nom : '?')).join(', ');
-    ajouterOrdreTravail({ date, type, titre: `${libelle ? libelle.label : type} — ${noms || lot.code}`, lotId: lot.id, details: {} });
+    ajouterOrdreTravail({ date, type, titre: `${libelle ? libelle.label : type}${suffixeTitre} — ${noms || lot.code}`, lotId: lot.id, details });
   };
 
   /* =========================================================================
@@ -5303,12 +5345,16 @@ export default function CahierDeChai() {
                 <div className="panel">
                   <h3 className="panel-title">Ajout rapide — mise en place</h3>
                   <p className="muted small">Un clic par cuve pour créer la tâche du {dateOrdre}, sans ouvrir de formulaire.</p>
-                  {[{ type: 'controle', label: 'Relevé T° / densité' }, { type: 'analyse', label: 'Analyse à prélever' }].map(({ type, label }) => (
-                    <div key={type} style={{ marginTop: 8 }}>
+                  {[
+                    { type: 'controle', label: 'Relevé T° / densité — Matin', details: { moment: 'matin' }, suffixe: ' (matin)' },
+                    { type: 'controle', label: 'Relevé T° / densité — Soir', details: { moment: 'soir' }, suffixe: ' (soir)' },
+                    { type: 'analyse', label: 'Analyse à prélever', details: {}, suffixe: '' },
+                  ].map(({ type, label, details, suffixe }) => (
+                    <div key={label} style={{ marginTop: 8 }}>
                       <div className="muted small" style={{ marginBottom: 5 }}>{label}</div>
                       <div className="quick-row">
                         {lotsVinification.map((l) => (
-                          <button key={l.id} className="btn btn-outline btn-sm" onClick={() => ajouterOrdreRapide(type, l, dateOrdre)}>
+                          <button key={l.id} className="btn btn-outline btn-sm" onClick={() => ajouterOrdreRapide(type, l, dateOrdre, details, suffixe)}>
                             + {(l.contenants || []).map((c) => (contenants[c.contenantId] ? contenants[c.contenantId].nom : '?')).join(', ')} ({l.code})
                           </button>
                         ))}
