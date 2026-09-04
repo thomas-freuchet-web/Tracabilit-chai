@@ -3096,6 +3096,7 @@ export default function CahierDeChai() {
   /* ---------- Navigation ---------- */
   const [vue, setVue] = useState('accueil');          // accueil | cave | produits | registre | mise | parametres
   const [modeCave, setModeCave] = useState('contenant'); // contenant | lot
+  const [voirArchives, setVoirArchives] = useState(false);
   const [lotOuvert, setLotOuvert] = useState(null);
   const [ongletLot, setOngletLot] = useState('suivi');
   const [paramsGraphe, setParamsGraphe] = useState(['densite', 'temperature']);
@@ -3971,6 +3972,20 @@ export default function CahierDeChai() {
         .then((blob) => telechargerBlob(blob, `fin-vinification-${l.code.replace(/[^\w-]/g, '')}.pdf`))
         .catch((e) => alert("Le PDF de fin de vinification n'a pas pu être généré : " + (e && e.message ? e.message : 'erreur inconnue')));
     }
+  };
+
+  // Export manuel, utilisable à tout moment (y compris sur un lot déjà
+  // archivé / une cuve déjà vidée) — permet de ressortir la traçabilité
+  // complète d'un lot rétroactivement, sans attendre un nouveau transfert.
+  const exporterPdfLot = (lotId) => {
+    const l = lots[lotId];
+    const nomsContenants = (l.contenants || []).map((c) => (contenants[c.contenantId] ? contenants[c.contenantId].nom : '?')).join(', ');
+    genererPdfCuve(l, contenants, parcelles, cepages, {
+      titre: `Récap de traçabilité — ${l.code}`,
+      sousTitre: nomsContenants ? `Contenant(s) actuel(s) : ${nomsContenants}` : 'Cuve vidée — lot archivé',
+    })
+      .then((blob) => telechargerBlob(blob, `tracabilite-${l.code.replace(/[^\w-]/g, '')}-${today()}.pdf`))
+      .catch((e) => alert("Le PDF n'a pas pu être généré : " + (e && e.message ? e.message : 'erreur inconnue')));
   };
 
   const supprimerLot = (lotId) => {
@@ -5429,6 +5444,12 @@ export default function CahierDeChai() {
                 </div>
                 <input className="recherche" placeholder="Rechercher un contenant, un lot, un cépage, une parcelle…"
                   value={recherche} onChange={(e) => setRecherche(e.target.value)} />
+                {modeCave === 'lot' && (
+                  <label className="checkbox-inline muted small">
+                    <input type="checkbox" checked={voirArchives} onChange={(e) => setVoirArchives(e.target.checked)} />
+                    {' '}Inclure les lots archivés / cuves vidées
+                  </label>
+                )}
               </header>
 
               {modeCave === 'contenant' ? (
@@ -5492,26 +5513,32 @@ export default function CahierDeChai() {
                       <tr><th>Lot</th><th>Composition</th><th>Phase</th><th>Contenants</th><th>Volume</th><th></th></tr>
                     </thead>
                     <tbody>
-                      {lotsActifs
+                      {(voirArchives ? Object.values(lots) : lotsActifs)
                         .filter((l) => {
                           const q = recherche.trim().toLowerCase();
                           if (!q) return true;
+                          const contenantsHistoriques = (l.operations || [])
+                            .flatMap((o) => [o.contenantId, o.contenantSourceId, o.contenantDestId])
+                            .filter(Boolean)
+                            .map((cid) => (contenants[cid] ? contenants[cid].nom.toLowerCase() : ''));
                           return l.code.toLowerCase().includes(q) || (l.nom || '').toLowerCase().includes(q)
-                            || libelleComposition(l, parcelles, cepages).toLowerCase().includes(q);
+                            || libelleComposition(l, parcelles, cepages).toLowerCase().includes(q)
+                            || contenantsHistoriques.some((n) => n.includes(q));
                         })
+                        .sort((a, b) => (a.statut === 'archive') - (b.statut === 'archive') || a.code.localeCompare(b.code, undefined, { numeric: true }))
                         .map((l) => (
                           <tr key={l.id} onClick={() => ouvrirLot(l.id)} className="ligne-cliquable">
                             <td><strong><ColorDot couleur={couleurLot(l, parcelles, cepages)} />{l.code}</strong>{l.nom ? <div className="muted small">{l.nom}</div> : null}</td>
                             <td className="small">{compositionParCepage(l, parcelles, cepages).map((c) => `${c.pct} % ${c.nom}`).join(' · ') || '—'}</td>
-                            <td><PhaseBadge phase={l.phase} /></td>
-                            <td className="small">{(l.contenants || []).map((c) => `${nomContenant(c.contenantId)} (${c.volume})`).join(', ')}</td>
+                            <td><PhaseBadge phase={l.phase} />{l.statut === 'archive' && <span className="badge badge-muted">Archivé</span>}</td>
+                            <td className="small">{(l.contenants || []).map((c) => `${nomContenant(c.contenantId)} (${c.volume})`).join(', ') || '—'}</td>
                             <td><strong>{volumeLot(l)} hL</strong></td>
                             <td className="muted">›</td>
                           </tr>
                         ))}
                     </tbody>
                   </table>
-                  {lotsActifs.length === 0 && (
+                  {(voirArchives ? Object.values(lots) : lotsActifs).length === 0 && (
                     <EmptyState titre="Aucun lot" texte="Enregistre un apport de vendange pour démarrer."
                       action={<button className="btn btn-primary" onClick={() => ouvrir('apport')}>+ Apport de vendange</button>} />
                   )}
@@ -5581,6 +5608,7 @@ export default function CahierDeChai() {
                     {lot.phase === 'elevage' ? 'Retour en vinification' : 'Fin de fermentation →'}
                   </button>
                   <button className="btn btn-outline btn-sm" onClick={() => ouvrir('mise', { lotId: lot.id })}>Mise en bouteille</button>
+                  <button className="btn btn-outline btn-sm" onClick={() => exporterPdfLot(lot.id)}>Exporter en PDF</button>
                   <button className="btn btn-ghost btn-sm" onClick={() => ouvrir('editLot', { lotId: lot.id })}>Modifier</button>
                   <button className="btn btn-danger btn-sm" onClick={() => supprimerLot(lot.id)}>Supprimer</button>
                 </div>

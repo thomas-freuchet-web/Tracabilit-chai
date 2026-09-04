@@ -387,6 +387,10 @@ h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -.01em; }
 .badge-bordeaux { background: var(--bordeaux-100); color: var(--bordeaux-600); }
 .badge-bordeaux .dot { background: var(--bordeaux-500); }
 .badge-steel { background: var(--steel-100); color: var(--steel-600); }
+.badge-muted { background: var(--stone-150, var(--stone-100)); color: var(--stone-500); margin-left: 6px; }
+
+.checkbox-inline { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; cursor: pointer; }
+.checkbox-inline input { margin: 0; }
 .badge-steel .dot { background: var(--steel-500); }
 
 .chip {
