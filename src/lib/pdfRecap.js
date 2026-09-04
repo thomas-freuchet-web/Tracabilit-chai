@@ -130,7 +130,8 @@ function dessinerCourbe(doc, points) {
 
 /* Génère le récap PDF (température, densité, produits ajoutés) d'un seul lot,
    utilisé à la fin de la vinification. Renvoie une Promise<Blob>. */
-export function genererPdfCuve(lot, contenants, parcelles, cepages) {
+export function genererPdfCuve(lot, contenants, parcelles, cepages, options = {}) {
+  const { titre = 'Récap de vinification — fin de fermentation', sousTitre } = options;
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: 40, size: 'A4' });
     const morceaux = [];
@@ -151,8 +152,9 @@ export function genererPdfCuve(lot, contenants, parcelles, cepages) {
       })
       .join(' · ');
 
-    doc.fontSize(18).fillColor('#16130f').text('Récap de vinification — fin de fermentation');
+    doc.fontSize(18).fillColor('#16130f').text(titre);
     doc.fontSize(10).fillColor('#7d6f5b').text(`Édité le ${aujourdhui}`);
+    if (sousTitre) doc.fontSize(10).fillColor('#7d6f5b').text(sousTitre);
     doc.moveDown(1);
 
     doc.fontSize(16).fillColor('#16130f').text(`${lot.code}${lot.nom ? ' — ' + lot.nom : ''}`);
@@ -161,6 +163,80 @@ export function genererPdfCuve(lot, contenants, parcelles, cepages) {
       .text(`Contenant(s) : ${contenantsNoms || '—'} · Volume actuel : ${volume} hL`);
     if (composition) doc.text(`Composition : ${composition}`);
     doc.moveDown(0.6);
+
+    const apports = (lot.operations || [])
+      .filter((o) => o.type === 'apport')
+      .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
+    doc.fontSize(12).fillColor('#16130f').text('Apports de vendange', { underline: true });
+    doc.moveDown(0.3);
+    if (apports.length === 0) {
+      doc.fontSize(10).fillColor('#7d6f5b').text('Aucun apport direct sur ce lot (vin reçu par transfert — voir mouvements ci-dessous).');
+      doc.moveDown(0.8);
+    } else {
+      dessinerTableau(
+        doc,
+        ['Date', 'Parcelle', 'Cépage', 'Volume (hL)', 'Poids (kg)'],
+        apports.map((o) => {
+          const p = parcelles[o.parcelleId];
+          const cep = p ? cepages[p.cepageId] : null;
+          return [
+            o.date,
+            p ? p.nom : '—',
+            cep ? cep.nom : '—',
+            o.volume !== undefined ? o.volume : '—',
+            o.poidsKg !== undefined && o.poidsKg !== null ? o.poidsKg : '—',
+          ];
+        }),
+        [1, 1, 1.2, 1, 1]
+      );
+    }
+
+    const mouvements = (lot.operations || [])
+      .filter((o) => ['transfert', 'reception', 'deplacement', 'origine'].includes(o.type))
+      .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
+    doc.fontSize(12).fillColor('#16130f').text('Mouvements et transferts', { underline: true });
+    doc.moveDown(0.3);
+    if (mouvements.length === 0) {
+      doc.fontSize(10).fillColor('#7d6f5b').text('Aucun mouvement enregistré.');
+      doc.moveDown(0.8);
+    } else {
+      const libelleType = { transfert: 'Transfert sortant', reception: 'Réception', deplacement: 'Déplacement', origine: 'Origine (scission)' };
+      dessinerTableau(
+        doc,
+        ['Date', 'Mouvement', 'Volume (hL)', 'Contenant source', 'Contenant dest.', 'Lot lié'],
+        mouvements.map((o) => [
+          o.date,
+          libelleType[o.type] || o.type,
+          o.volume !== undefined ? o.volume : '—',
+          o.contenantSourceId && contenants[o.contenantSourceId] ? contenants[o.contenantSourceId].nom : '—',
+          o.contenantDestId && contenants[o.contenantDestId] ? contenants[o.contenantDestId].nom : '—',
+          o.lotAutreCode || '—',
+        ]),
+        [1, 1.3, 0.9, 1.1, 1.1, 1.1]
+      );
+    }
+
+    const pertes = (lot.operations || [])
+      .filter((o) => o.type === 'perte')
+      .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
+    if (pertes.length > 0) {
+      doc.fontSize(12).fillColor('#16130f').text('Pertes', { underline: true });
+      doc.moveDown(0.3);
+      dessinerTableau(
+        doc,
+        ['Date', 'Volume (hL)', 'Motif', 'Contenant'],
+        pertes.map((o) => [
+          o.date,
+          o.volume !== undefined ? o.volume : '—',
+          o.motif || '—',
+          o.contenantId && contenants[o.contenantId] ? contenants[o.contenantId].nom : '—',
+        ]),
+        [1, 1, 1.6, 1.4]
+      );
+    }
 
     const controles = (lot.operations || []).filter((o) => o.type === 'controle');
     const analyses = (lot.operations || []).filter(

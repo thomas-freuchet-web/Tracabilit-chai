@@ -3482,6 +3482,14 @@ export default function CahierDeChai() {
     const totalite = Math.abs(volume - volSrcTotal) < 0.001;
     const opCommune = { date, motif: motif || 'Transfert', note: note || '', auteur: user.id };
 
+    // La cuve source est-elle intégralement vidée par ce transfert ? Si oui,
+    // on en sort un PDF récap (apports, mouvements, contrôles, produits) une
+    // fois l'état enregistré — la cuve part souvent au nettoyage juste après.
+    const nomContenantSource = contenants[contenantSourceId] ? contenants[contenantSourceId].nom : contenantSourceId;
+    const nomContenantDest = dest ? dest.nom : contenantDestId;
+    const cuveVideeParTransfert = round2(ligneSrc.volume - volume) <= 0.001;
+    let lotSrcApresTransfert = null;
+
     setLots((prev) => {
       const next = { ...prev };
       const lotSrc = { ...next[lotSourceId] };
@@ -3509,6 +3517,7 @@ export default function CahierDeChai() {
           contenantSourceId, contenantDestId, lotAutreId: occDest.lotId, lotAutreCode: lotDest.code,
         }];
         if (volumeLot(lotSrc) <= 0.001) lotSrc.statut = 'archive';
+        lotSrcApresTransfert = lotSrc;
         next[lotSourceId] = lotSrc;
         return next;
       }
@@ -3519,6 +3528,7 @@ export default function CahierDeChai() {
         lotSrc.operations = [...(lotSrc.operations || []), {
           id: uid('op'), type: 'deplacement', ...opCommune, volume, contenantSourceId, contenantDestId,
         }];
+        lotSrcApresTransfert = lotSrc;
         next[lotSourceId] = lotSrc;
         return next;
       }
@@ -3548,6 +3558,7 @@ export default function CahierDeChai() {
           contenantSourceId, contenantDestId, lotAutreId: idEnfant, lotAutreCode: next[idEnfant].code,
         }];
         if (volumeLot(lotSrc) <= 0.001) lotSrc.statut = 'archive';
+        lotSrcApresTransfert = lotSrc;
         next[lotSourceId] = lotSrc;
         return next;
       }
@@ -3561,9 +3572,19 @@ export default function CahierDeChai() {
       lotSrc.operations = [...(lotSrc.operations || []), {
         id: uid('op'), type: 'deplacement', ...opCommune, volume, contenantSourceId, contenantDestId,
       }];
+      lotSrcApresTransfert = lotSrc;
       next[lotSourceId] = lotSrc;
       return next;
     });
+
+    if (cuveVideeParTransfert && lotSrcApresTransfert) {
+      genererPdfCuve(lotSrcApresTransfert, contenants, parcelles, cepages, {
+        titre: `Récap de cuve vidée — ${nomContenantSource}`,
+        sousTitre: `Vidée le ${date} par transfert vers ${nomContenantDest}${motif ? ' (' + motif + ')' : ''}`,
+      })
+        .then((blob) => telechargerBlob(blob, `cuve-videe-${nomContenantSource.replace(/[^\w-]/g, '')}-${date}.pdf`))
+        .catch((e) => alert("Le PDF de la cuve vidée n'a pas pu être généré : " + (e && e.message ? e.message : 'erreur inconnue')));
+    }
     return true;
   };
 
