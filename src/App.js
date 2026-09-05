@@ -1193,7 +1193,7 @@ function EcranReleve({ lots, contenants, lieux, parcelles, cepages, onEnregistre
             <thead>
               <tr>
                 <th>Contenant</th><th>Lot</th><th>Dernier relevé</th>
-                <th>Température °C</th><th>Densité</th><th>Observation</th>
+                <th>Densité</th><th>Température °C</th><th>Observation</th>
               </tr>
             </thead>
             <tbody>
@@ -1225,16 +1225,16 @@ function EcranReleve({ lots, contenants, lieux, parcelles, cepages, onEnregistre
                         </>
                       ) : <span className="muted">aucun relevé précédent</span>}
                     </td>
-                    <td data-label="Température °C">
-                      <input className="cell-input" type="number" step="0.1" placeholder="—"
-                        value={s.temperature || ''} onChange={(e) => set(k, 'temperature', e.target.value)} />
-                    </td>
                     <td data-label="Densité">
                       <input className="cell-input" type="number" step="0.001" placeholder="—"
                         value={s.densite || ''} onChange={(e) => set(k, 'densite', e.target.value)} />
                       {ecart !== null && ecart !== 0 && (
                         <div className={`delta ${ecart > 0 ? 'up' : 'down'}`}>{ecart > 0 ? '+' : ''}{ecart}</div>
                       )}
+                    </td>
+                    <td data-label="Température °C">
+                      <input className="cell-input" type="number" step="0.1" placeholder="—"
+                        value={s.temperature || ''} onChange={(e) => set(k, 'temperature', e.target.value)} />
                     </td>
                     <td data-label="Observation">
                       <input className="cell-input large" type="text" placeholder="—"
@@ -1314,11 +1314,11 @@ function ModaleControle({ lot, contenants, onValider, onFermer, controle, initia
       )}
 
       <div className="field-grid">
-        <Field label="Température (°C)">
-          <input type="number" step="0.1" autoFocus value={f.temperature} onChange={(e) => set('temperature', e.target.value)} />
-        </Field>
         <Field label="Densité">
-          <input type="number" step="0.001" value={f.densite} onChange={(e) => set('densite', e.target.value)} />
+          <input type="number" step="0.001" autoFocus value={f.densite} onChange={(e) => set('densite', e.target.value)} />
+        </Field>
+        <Field label="Température (°C)">
+          <input type="number" step="0.1" value={f.temperature} onChange={(e) => set('temperature', e.target.value)} />
         </Field>
       </div>
 
