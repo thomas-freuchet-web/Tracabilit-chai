@@ -116,6 +116,17 @@ function formaterPetiteQuantite(valeur, uniteProduit) {
   return `${round3(valeur * 1000)} ${uniteFine}`;
 }
 
+// Dose par hL affichable pour un ajout déjà enregistré (quantité totale
+// rapportée au volume du lot au moment de l'ajout — voir ajouterProduitAuLot,
+// qui fige ce volume dans volumeHl). Sans volume connu, aucune dose n'est
+// affichée plutôt qu'un calcul trompeur.
+function formaterDoseParHl(quantite, uniteProduit, volumeLotHl) {
+  if (quantite === undefined || quantite === null || !volumeLotHl || volumeLotHl <= 0) return null;
+  const doseParHl = quantite / volumeLotHl;
+  const fin = formaterPetiteQuantite(doseParHl, uniteProduit);
+  return fin ? `${fin}/hL` : `${round3(doseParHl)} ${uniteProduit}/hL`;
+}
+
 // Motifs de "Sortie de volume" considérés comme déchet viticole (marc, lies,
 // bourbes...) plutôt que perte technique — cumulés dans le panneau "Poubelle
 // viticole" de l'accueil.
@@ -155,7 +166,8 @@ function estManipReglementaire(o) {
 // (produit, quantité) pour les tableaux du registre.
 function normaliserManipReglementaire(o) {
   if (o.type !== 'ajout') return o;
-  return { ...o, produit: o.produitNom, quantiteProduit: `${o.quantite} ${o.unite}` };
+  const dose = formaterDoseParHl(o.quantite, o.unite, o.volumeHl);
+  return { ...o, produit: o.produitNom, quantiteProduit: `${o.quantite} ${o.unite}${dose ? ` (${dose})` : ''}` };
 }
 
 const FORMATS_BOUTEILLE = [
@@ -3635,6 +3647,9 @@ export default function CahierDeChai() {
     ajouterOperation(lotId, {
       id: opId, type: 'ajout', date, produitId, produitNom: prod.nom, categorie: prod.categorie,
       quantite: q, unite: prod.unite, contenantId,
+      // Volume du lot au moment de l'ajout — figé ici pour pouvoir réafficher
+      // la dose par hL plus tard même si le lot change de volume ensuite.
+      volumeHl: volumeLot(lots[lotId]),
       numeroLotFournisseur: numeroLotFournisseur || '', dluo: dluo || '',
       manipType: manipType || null, notes: notes || '', auteur: user.id,
       mouvementId,
@@ -4679,7 +4694,7 @@ export default function CahierDeChai() {
         intrants.push({
           'Date': o.date, 'Lot': l.code, 'Contenant': nomContenant(o.contenantId),
           'Produit': o.produitNom, 'Catégorie': o.categorie || '',
-          'Quantité': o.quantite, 'Unité': o.unite || '',
+          'Quantité': o.quantite, 'Unité': o.unite || '', 'Dose': formaterDoseParHl(o.quantite, o.unite, o.volumeHl) || '',
           'N° lot fournisseur': o.numeroLotFournisseur || '', 'DLUO': o.dluo || '',
           'Notes': o.notes || '', 'Saisi par': o.auteur || '',
         });
@@ -6185,7 +6200,7 @@ export default function CahierDeChai() {
                     <p className="muted small">Lots d'origine inclus — c'est la liste complète des intrants du vin actuellement dans ce lot.</p>
                     {intrants.length === 0 ? <p className="muted">Aucun produit ajouté.</p> : (
                       <table className="data-table compact">
-                        <thead><tr><th>Date</th><th>Produit</th><th>Catégorie</th><th>Quantité</th><th>N° lot fournisseur</th><th>DLUO</th><th>Lot</th><th></th><th></th></tr></thead>
+                        <thead><tr><th>Date</th><th>Produit</th><th>Catégorie</th><th>Quantité</th><th>Dose</th><th>N° lot fournisseur</th><th>DLUO</th><th>Lot</th><th></th><th></th></tr></thead>
                         <tbody>
                           {intrants.map((o) => (
                             <tr key={o.id}>
@@ -6193,6 +6208,7 @@ export default function CahierDeChai() {
                               <td><strong>{o.produitNom}</strong></td>
                               <td className="small">{o.categorie}</td>
                               <td>{o.quantite} {o.unite}</td>
+                              <td className="small">{formaterDoseParHl(o.quantite, o.unite, o.volumeHl || volumeLot(lots[o._lotId])) || '—'}</td>
                               <td className="small">{o.numeroLotFournisseur || '—'}</td>
                               <td className="small">{o.dluo || '—'}</td>
                               <td className="small">{o._lotCode}</td>

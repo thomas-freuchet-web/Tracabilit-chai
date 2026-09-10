@@ -6,6 +6,20 @@ import HelveticaBold from 'pdfkit/standard-fonts/HelveticaBold';
 // sont plus embarquées automatiquement, il faut les enregistrer explicitement.
 registerStdFonts(Helvetica, HelveticaBold);
 
+// Dose par hL affichable pour un ajout (quantité totale rapportée au volume
+// du lot au moment de l'ajout, figé dans volumeHl — voir ajouterProduitAuLot
+// dans App.js). Sans volume connu (ajouts enregistrés avant cette version),
+// aucune dose n'est affichée plutôt qu'un calcul trompeur.
+function formaterDoseParHl(quantite, uniteProduit, volumeLotHl) {
+  if (quantite === undefined || quantite === null || !volumeLotHl || volumeLotHl <= 0) return null;
+  const round3 = (n) => Math.round((n + Number.EPSILON) * 1000) / 1000;
+  const doseParHl = quantite / volumeLotHl;
+  const conversions = { kg: 'g', L: 'mL' };
+  const uniteFine = conversions[uniteProduit];
+  if (uniteFine && Math.abs(doseParHl) < 1) return `${round3(doseParHl * 1000)} ${uniteFine}/hL`;
+  return `${round3(doseParHl)} ${uniteProduit}/hL`;
+}
+
 function repartirLargeurs(doc, poids) {
   const total = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   const somme = poids.reduce((a, b) => a + b, 0);
@@ -308,14 +322,15 @@ export function genererPdfCuve(lot, contenants, parcelles, cepages, options = {}
     } else {
       dessinerTableau(
         doc,
-        ['Date', 'Produit', 'Quantité', 'N° lot fournisseur'],
+        ['Date', 'Produit', 'Quantité', 'Dose', 'N° lot fournisseur'],
         ajouts.map((o) => [
           o.date,
           o.produitNom || '—',
           `${o.quantite !== undefined ? o.quantite : ''} ${o.unite || ''}`.trim() || '—',
+          formaterDoseParHl(o.quantite, o.unite, o.volumeHl) || '—',
           o.numeroLotFournisseur || '—',
         ]),
-        [1, 1.4, 1, 1.4]
+        [0.9, 1.2, 0.9, 1, 1.3]
       );
     }
 

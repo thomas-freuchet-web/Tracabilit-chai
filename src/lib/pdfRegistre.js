@@ -12,9 +12,22 @@ registerStdFonts(Helvetica, HelveticaBold);
 function estManipReglementaire(o) {
   return o.type === 'manipulation' || (o.type === 'ajout' && !!o.manipType);
 }
+// Dose par hL (quantité rapportée au volume du lot au moment de l'ajout,
+// figé dans volumeHl — voir ajouterProduitAuLot dans App.js). Sans volume
+// connu (ajouts enregistrés avant cette version), aucune dose n'est ajoutée.
+function formaterDoseParHl(quantite, uniteProduit, volumeLotHl) {
+  if (quantite === undefined || quantite === null || !volumeLotHl || volumeLotHl <= 0) return null;
+  const round3 = (n) => Math.round((n + Number.EPSILON) * 1000) / 1000;
+  const doseParHl = quantite / volumeLotHl;
+  const conversions = { kg: 'g', L: 'mL' };
+  const uniteFine = conversions[uniteProduit];
+  if (uniteFine && Math.abs(doseParHl) < 1) return `${round3(doseParHl * 1000)} ${uniteFine}/hL`;
+  return `${round3(doseParHl)} ${uniteProduit}/hL`;
+}
 function normaliserManipReglementaire(o) {
   if (o.type !== 'ajout') return o;
-  return { ...o, produit: o.produitNom, quantiteProduit: `${o.quantite} ${o.unite}` };
+  const dose = formaterDoseParHl(o.quantite, o.unite, o.volumeHl);
+  return { ...o, produit: o.produitNom, quantiteProduit: `${o.quantite} ${o.unite}${dose ? ` (${dose})` : ''}` };
 }
 
 function nouvelleSection(doc, titre) {
