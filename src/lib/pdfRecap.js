@@ -238,6 +238,30 @@ export function genererPdfCuve(lot, contenants, parcelles, cepages, options = {}
       );
     }
 
+    const travaux = (lot.operations || [])
+      .filter((o) => o.type === 'travail')
+      .sort((a, b) => (a.date || '').localeCompare(b.date || '') || (a.heure || '').localeCompare(b.heure || ''));
+
+    doc.fontSize(12).fillColor('#16130f').text('Travaux de chai', { underline: true });
+    doc.moveDown(0.3);
+    if (travaux.length === 0) {
+      doc.fontSize(10).fillColor('#7d6f5b').text('Aucun travail de cave enregistré.');
+      doc.moveDown(0.8);
+    } else {
+      dessinerTableau(
+        doc,
+        ['Date', 'Heure', 'Action', 'Durée / intensité', 'Notes'],
+        travaux.map((o) => [
+          o.date,
+          o.heure || '—',
+          o.action || '—',
+          o.duree || '—',
+          o.notes || '—',
+        ]),
+        [0.9, 0.7, 1.2, 1.1, 1.6]
+      );
+    }
+
     const controles = (lot.operations || []).filter((o) => o.type === 'controle');
     const analyses = (lot.operations || []).filter(
       (o) => o.type === 'analyse' && o.valeurs && (o.valeurs.temperature !== undefined || o.valeurs.densite !== undefined)
