@@ -4650,7 +4650,7 @@ export default function CahierDeChai() {
           'N° cuve': nomContenant(o.contenantId),
           'Capacité (hL)': contenants[o.contenantId] ? contenants[o.contenantId].capacite : '',
           'Volume mis en cuve (hL)': o.volume, 'Poids (kg)': o.poidsKg || '',
-          'Lot': l.code, 'Observations': o.notes || '',
+          'Lot': l.code, 'Millésime': l.millesime, 'Observations': o.notes || '',
         });
       });
     });
@@ -5506,7 +5506,7 @@ export default function CahierDeChai() {
                                   {l ? (
                                     <>
                                       <div className="contenant-lot"><ColorDot couleur={couleurLot(l, parcelles, cepages)} />{l.code}</div>
-                                      <div className="muted small">{o.volume} hL{c.capacite ? ` / ${c.capacite}` : ''}</div>
+                                      <div className="muted small">Millésime {l.millesime} · {o.volume} hL{c.capacite ? ` / ${c.capacite}` : ''}</div>
                                     </>
                                   ) : (
                                     <div className="muted small">Vide{c.capacite ? ` · ${c.capacite} hL` : ''}</div>
@@ -5525,7 +5525,7 @@ export default function CahierDeChai() {
                 <div className="table-wrap">
                   <table className="data-table">
                     <thead>
-                      <tr><th>Lot</th><th>Composition</th><th>Phase</th><th>Contenants</th><th>Volume</th><th></th></tr>
+                      <tr><th>Lot</th><th>Millésime</th><th>Composition</th><th>Phase</th><th>Contenants</th><th>Volume</th><th></th></tr>
                     </thead>
                     <tbody>
                       {(voirArchives ? Object.values(lots) : lotsActifs)
@@ -5537,6 +5537,7 @@ export default function CahierDeChai() {
                             .filter(Boolean)
                             .map((cid) => (contenants[cid] ? contenants[cid].nom.toLowerCase() : ''));
                           return l.code.toLowerCase().includes(q) || (l.nom || '').toLowerCase().includes(q)
+                            || String(l.millesime || '').includes(q)
                             || libelleComposition(l, parcelles, cepages).toLowerCase().includes(q)
                             || contenantsHistoriques.some((n) => n.includes(q));
                         })
@@ -5544,6 +5545,7 @@ export default function CahierDeChai() {
                         .map((l) => (
                           <tr key={l.id} onClick={() => ouvrirLot(l.id)} className="ligne-cliquable">
                             <td><strong><ColorDot couleur={couleurLot(l, parcelles, cepages)} />{l.code}</strong>{l.nom ? <div className="muted small">{l.nom}</div> : null}</td>
+                            <td className="small">{l.millesime || '—'}</td>
                             <td className="small">{compositionParCepage(l, parcelles, cepages).map((c) => `${c.pct} % ${c.nom}`).join(' · ') || '—'}</td>
                             <td><PhaseBadge phase={l.phase} />{l.statut === 'archive' && <span className="badge badge-muted">Archivé</span>}</td>
                             <td className="small">{(l.contenants || []).map((c) => `${nomContenant(c.contenantId)} (${c.volume})`).join(', ') || '—'}</td>
@@ -6423,7 +6425,7 @@ export default function CahierDeChai() {
                   </div>
                   {apportsFiltres.length === 0 ? <p className="muted">Aucun apport.</p> : triEntreesVendange === 'date' ? (
                     <table className="data-table compact">
-                      <thead><tr><th>Date</th><th>Lot</th><th>Parcelle</th><th>Cépage</th><th>Appellation</th><th>Contenant</th><th>Volume</th><th>Poids</th><th></th><th></th></tr></thead>
+                      <thead><tr><th>Date</th><th>Lot</th><th>Millésime</th><th>Parcelle</th><th>Cépage</th><th>Appellation</th><th>Contenant</th><th>Volume</th><th>Poids</th><th></th><th></th></tr></thead>
                       <tbody>
                         {[...apportsFiltres].sort((a, b) => b.date.localeCompare(a.date)).map((o) => {
                           const p = parcelles[o.parcelleId];
@@ -6432,6 +6434,7 @@ export default function CahierDeChai() {
                             <tr key={o.id}>
                               <td className="nowrap">{o.date}</td>
                               <td><button className="lien" onClick={() => ouvrirLot(o._lot.id)}>{o._lot.code}</button></td>
+                              <td className="small">{o._lot.millesime || '—'}</td>
                               <td>{p ? p.nom : '—'}{p && p.cadastre ? <div className="muted small">{p.cadastre}</div> : null}</td>
                               <td className="small">{cep ? <><ColorDot couleur={cep.couleur} />{cep.nom}</> : '—'}</td>
                               <td className="small">{p ? p.appellation || '—' : '—'}</td>
@@ -6469,12 +6472,13 @@ export default function CahierDeChai() {
                             </span>
                           </h4>
                           <table className="data-table compact">
-                            <thead><tr><th>Date</th><th>Lot</th><th>Contenant</th><th>Volume</th><th>Poids</th><th></th><th></th></tr></thead>
+                            <thead><tr><th>Date</th><th>Lot</th><th>Millésime</th><th>Contenant</th><th>Volume</th><th>Poids</th><th></th><th></th></tr></thead>
                             <tbody>
                               {[...g.apports].sort((a, b) => b.date.localeCompare(a.date)).map((o) => (
                                 <tr key={o.id}>
                                   <td className="nowrap">{o.date}</td>
                                   <td><button className="lien" onClick={() => ouvrirLot(o._lot.id)}>{o._lot.code}</button></td>
+                                  <td className="small">{o._lot.millesime || '—'}</td>
                                   <td className="small">{nomContenant(o.contenantId)}</td>
                                   <td>{o.volume} hL</td>
                                   <td className="small">{o.poidsKg ? `${o.poidsKg} kg` : '—'}</td>
@@ -6498,12 +6502,13 @@ export default function CahierDeChai() {
                       <h3 className="panel-title">{MANIP_TYPES[type].label} ({liste.length})</h3>
                       <p className="delai-hint">⏱ {MANIP_TYPES[type].delai}</p>
                       <table className="data-table compact">
-                        <thead><tr><th>Date</th><th>Lot</th><th>Contenant</th><th>Produit</th><th>Quantité</th><th>Volume</th><th>Détail</th><th></th><th></th></tr></thead>
+                        <thead><tr><th>Date</th><th>Lot</th><th>Millésime</th><th>Contenant</th><th>Produit</th><th>Quantité</th><th>Volume</th><th>Détail</th><th></th><th></th></tr></thead>
                         <tbody>
                           {liste.sort((a, b) => b.date.localeCompare(a.date)).map((o) => (
                             <tr key={o.id}>
                               <td className="nowrap">{o.date}</td>
                               <td><button className="lien" onClick={() => ouvrirLot(o._lot.id)}>{o._lot.code}</button></td>
+                              <td className="small">{o._lot.millesime || '—'}</td>
                               <td className="small">{nomContenant(o.contenantId)}</td>
                               <td className="small">{o.produit || '—'}</td>
                               <td className="small">{o.quantiteProduit || '—'}</td>
