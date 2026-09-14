@@ -60,6 +60,14 @@ function calculerDureeO2(dureeRef, volumeRef, volumeCuveHl) {
 }
 
 const ACTION_REMONTAGE = 'Remontage';
+// Combien de fois le volume de la cuve doit passer par le remontage (ex. 1,5
+// fois le volume pour bien homogénéiser un chapeau épais).
+const COEFFICIENTS_REMONTAGE = [
+  { valeur: 1, label: '1 fois le volume' },
+  { valeur: 1.5, label: '1,5 fois le volume (une fois et demie)' },
+  { valeur: 1.75, label: '1,75 fois le volume' },
+  { valeur: 2, label: '2 fois le volume' },
+];
 // Débits mesurés de la pompe, groupés par vitesse (1 ou 2).
 const DEBITS_POMPE = [
   { debit: 90, vitesse: 1 }, { debit: 110, vitesse: 1 }, { debit: 140, vitesse: 1 },
@@ -1741,12 +1749,12 @@ function ModaleTravail({ lot, contenants, onValider, onFermer, travail, initial 
     lotId: lot.id, date: travail.date, heure: travail.heure || nowTime(), action: travail.action,
     contenantId: travail.contenantId, duree: travail.duree || '', notes: travail.notes || '',
     pression: travail.pression || '', dureeRef: travail.dureeRef || '', volumeRef: travail.volumeRef || '',
-    volumeRemontage: travail.volumeRemontage || '', debitPompe: travail.debitPompe || '', nbPassages: travail.nbPassages || '1',
+    coefficientVolume: travail.coefficientVolume || '', volumeRemontage: travail.volumeRemontage || '', debitPompe: travail.debitPompe || '', nbPassages: travail.nbPassages || '1',
   } : {
     lotId: lot.id, date: today(), heure: nowTime(), action: '',
     contenantId: (lot.contenants[0] || {}).contenantId || '', duree: '', notes: '',
     pression: '', dureeRef: '', volumeRef: '',
-    volumeRemontage: '', debitPompe: '', nbPassages: '1',
+    coefficientVolume: '', volumeRemontage: '', debitPompe: '', nbPassages: '1',
     ...(initial || {}),
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
@@ -1754,6 +1762,12 @@ function ModaleTravail({ lot, contenants, onValider, onFermer, travail, initial 
   const estRemontage = f.action === ACTION_REMONTAGE;
   const volumeContenant = (lot.contenants.find((c) => c.contenantId === f.contenantId) || {}).volume || 0;
   const dureeCalculee = estO2 ? calculerDureeO2(f.dureeRef, f.volumeRef, volumeContenant) : null;
+  // Choisir "combien de fois le volume de la cuve" recalcule directement le
+  // volume total à remonter — reste éditable à la main ensuite si besoin.
+  const choisirCoefficient = (v) => setF((p) => ({
+    ...p, coefficientVolume: v,
+    volumeRemontage: v ? String(round2(Number(v) * volumeContenant)) : p.volumeRemontage,
+  }));
   const volumeRemontageEffectif = f.volumeRemontage !== '' ? Number(f.volumeRemontage) : volumeContenant;
   const dureeRemontageCalculee = estRemontage ? calculerDureeRemontage(volumeRemontageEffectif, f.debitPompe, f.nbPassages) : null;
   return (
@@ -1808,9 +1822,17 @@ function ModaleTravail({ lot, contenants, onValider, onFermer, travail, initial 
       {estRemontage && (
         <>
           <div className="field-grid">
-            <Field label="Volume total à remonter (hL)" hint={`Par défaut le volume de la cuve (${volumeContenant} hL)`}>
-              <input type="number" step="0.1" placeholder={String(volumeContenant)} value={f.volumeRemontage} onChange={(e) => set('volumeRemontage', e.target.value)} />
+            <Field label="Combien de fois le volume de la cuve ?" hint="Recalcule le volume total ci-dessous">
+              <select value={f.coefficientVolume} onChange={(e) => choisirCoefficient(e.target.value)}>
+                <option value="">— Personnalisé —</option>
+                {COEFFICIENTS_REMONTAGE.map((c) => <option key={c.valeur} value={c.valeur}>{c.label}</option>)}
+              </select>
             </Field>
+            <Field label="Volume total à remonter (hL)" hint={`Par défaut le volume de la cuve (${volumeContenant} hL)`}>
+              <input type="number" step="0.1" placeholder={String(volumeContenant)} value={f.volumeRemontage} onChange={(e) => setF((p) => ({ ...p, volumeRemontage: e.target.value, coefficientVolume: '' }))} />
+            </Field>
+          </div>
+          <div className="field-grid">
             <Field label="Vitesse de la pompe">
               <select value={f.debitPompe} onChange={(e) => set('debitPompe', e.target.value)}>
                 <option value="">— Sélectionner —</option>
@@ -1920,14 +1942,15 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
     contenantDestId: ordre.details.contenantDestId || '', volume: ordre.details.volume || '',
     action: ordre.details.action || '', motif: ordre.details.motif || '', moment: ordre.details.moment || '',
     pression: ordre.details.pression || '', dureeRef: ordre.details.dureeRef || '', volumeRef: ordre.details.volumeRef || '',
-    volumeRemontage: ordre.details.volumeRemontage || '', debitPompe: ordre.details.debitPompe || '', nbPassages: ordre.details.nbPassages || '1',
+    coefficientVolume: ordre.details.coefficientVolume || '', volumeRemontage: ordre.details.volumeRemontage || '',
+    debitPompe: ordre.details.debitPompe || '', nbPassages: ordre.details.nbPassages || '1',
     notes: ordre.notes || '',
   } : {
     date: dateInitiale || today(), type: 'libre', titre: '', lotId: '',
     lignes: [ligneVideOrdre()],
     contenantDestId: '', volume: '', action: '', motif: '', moment: '',
     pression: '', dureeRef: '', volumeRef: '',
-    volumeRemontage: '', debitPompe: '', nbPassages: '1', notes: '',
+    coefficientVolume: '', volumeRemontage: '', debitPompe: '', nbPassages: '1', notes: '',
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const lotSelectionne = lots.find((l) => l.id === f.lotId);
@@ -1959,7 +1982,9 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
       contenantDestId: f.contenantDestId, volume: f.volume, action: f.action, motif: f.motif,
       moment: f.moment,
       ...(f.action === ACTION_O2 ? { pression: f.pression, dureeRef: f.dureeRef, volumeRef: f.volumeRef } : {}),
-      ...(f.action === ACTION_REMONTAGE ? { volumeRemontage: f.volumeRemontage, debitPompe: f.debitPompe, nbPassages: f.nbPassages } : {}),
+      ...(f.action === ACTION_REMONTAGE
+        ? { coefficientVolume: f.coefficientVolume, volumeRemontage: f.volumeRemontage, debitPompe: f.debitPompe, nbPassages: f.nbPassages }
+        : {}),
     };
     if (onValider({ ...f, details })) onFermer();
   };
@@ -2097,12 +2122,24 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
             const volumeCuve = lotSelectionne ? volumeLot(lotSelectionne) : 0;
             const volumeEffectif = f.volumeRemontage !== '' ? Number(f.volumeRemontage) : volumeCuve;
             const dureeEstimee = calculerDureeRemontage(volumeEffectif, f.debitPompe, f.nbPassages);
+            const choisirCoefficient = (v) => setF((p) => ({
+              ...p, coefficientVolume: v,
+              volumeRemontage: v ? String(round2(Number(v) * volumeCuve)) : p.volumeRemontage,
+            }));
             return (
               <>
                 <div className="field-grid">
-                  <Field label="Volume total à remonter (hL)" hint={lotSelectionne ? `Par défaut le volume du lot (${volumeCuve} hL)` : 'Optionnel'}>
-                    <input type="number" step="0.1" placeholder={String(volumeCuve)} value={f.volumeRemontage} onChange={(e) => set('volumeRemontage', e.target.value)} />
+                  <Field label="Combien de fois le volume de la cuve ?" hint="Recalcule le volume total ci-dessous">
+                    <select value={f.coefficientVolume} onChange={(e) => choisirCoefficient(e.target.value)}>
+                      <option value="">— Personnalisé —</option>
+                      {COEFFICIENTS_REMONTAGE.map((c) => <option key={c.valeur} value={c.valeur}>{c.label}</option>)}
+                    </select>
                   </Field>
+                  <Field label="Volume total à remonter (hL)" hint={lotSelectionne ? `Par défaut le volume du lot (${volumeCuve} hL)` : 'Optionnel'}>
+                    <input type="number" step="0.1" placeholder={String(volumeCuve)} value={f.volumeRemontage} onChange={(e) => setF((p) => ({ ...p, volumeRemontage: e.target.value, coefficientVolume: '' }))} />
+                  </Field>
+                </div>
+                <div className="field-grid">
                   <Field label="Vitesse de la pompe">
                     <select value={f.debitPompe} onChange={(e) => set('debitPompe', e.target.value)}>
                       <option value="">— Sélectionner —</option>
@@ -3333,7 +3370,9 @@ export default function CahierDeChai() {
       initial: {
         action: d.action || '',
         ...(d.action === ACTION_O2 ? { pression: d.pression || '', dureeRef: d.dureeRef || '', volumeRef: d.volumeRef || '' } : {}),
-        ...(d.action === ACTION_REMONTAGE ? { volumeRemontage: d.volumeRemontage || '', debitPompe: d.debitPompe || '', nbPassages: d.nbPassages || '1' } : {}),
+        ...(d.action === ACTION_REMONTAGE
+          ? { coefficientVolume: d.coefficientVolume || '', volumeRemontage: d.volumeRemontage || '', debitPompe: d.debitPompe || '', nbPassages: d.nbPassages || '1' }
+          : {}),
       },
     });
     else if (ordre.type === 'perte') ouvrir('perte', { ...commun, initial: { motif: d.motif || '' } });
@@ -3989,7 +4028,10 @@ export default function CahierDeChai() {
       return { pression: form.pression || '', dureeRef: form.dureeRef || '', volumeRef: form.volumeRef || '' };
     }
     if (form.action === ACTION_REMONTAGE) {
-      return { volumeRemontage: form.volumeRemontage || '', debitPompe: form.debitPompe || '', nbPassages: form.nbPassages || '1' };
+      return {
+        coefficientVolume: form.coefficientVolume || '', volumeRemontage: form.volumeRemontage || '',
+        debitPompe: form.debitPompe || '', nbPassages: form.nbPassages || '1',
+      };
     }
     return {};
   };
@@ -4014,7 +4056,7 @@ export default function CahierDeChai() {
           ? {
             ...o, date: form.date, heure: form.heure, action: form.action, contenantId: form.contenantId, duree: form.duree || '', notes: form.notes || '',
             pression: undefined, dureeRef: undefined, volumeRef: undefined,
-            volumeRemontage: undefined, debitPompe: undefined, nbPassages: undefined,
+            coefficientVolume: undefined, volumeRemontage: undefined, debitPompe: undefined, nbPassages: undefined,
             ...champsSpecifiquesTravail(form),
           }
           : o)),
