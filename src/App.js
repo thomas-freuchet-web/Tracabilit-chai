@@ -2970,10 +2970,19 @@ function ModaleProgrammation({ programmation, produits, onValider, onFermer }) {
       });
       if (error) {
         let detail = error.message;
-        if (error.context && typeof error.context.json === 'function') {
-          try { const corps = await error.context.json(); if (corps && (corps.error || corps.message)) detail = corps.error || corps.message; } catch { /* corps non-JSON */ }
+        let statut = null;
+        if (error.context) {
+          statut = error.context.status;
+          if (typeof error.context.json === 'function') {
+            try {
+              const corps = await error.context.json();
+              if (corps && (corps.error || corps.message)) detail = corps.error || corps.message;
+            } catch { /* corps non-JSON, on garde le message générique */ }
+          }
         }
-        throw new Error(detail);
+        // eslint-disable-next-line no-console
+        console.error('Erreur import IA de la programmation :', { statut, detail, error });
+        throw new Error(statut ? `${detail} (HTTP ${statut})` : detail);
       }
       if (data && data.error) throw new Error(data.error);
 
