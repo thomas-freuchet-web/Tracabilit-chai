@@ -3156,35 +3156,6 @@ function ModaleProgrammation({ programmation, produits, onValider, onFermer }) {
   );
 }
 
-function ModaleListeProgrammations({ programmations, onNouvelle, onModifier, onSupprimer, onFermer }) {
-  const liste = Object.values(programmations).sort((a, b) => a.nom.localeCompare(b.nom));
-  return (
-    <Modal title="Programmations" subtitle="Protocoles de vinification par densité, réutilisables sur plusieurs cuves" onClose={onFermer}>
-      {liste.length === 0 ? (
-        <p className="muted">Aucune programmation enregistrée pour le moment.</p>
-      ) : (
-        <table className="data-table compact">
-          <thead><tr><th>Nom</th><th>Origine</th><th>Événements</th><th></th><th></th></tr></thead>
-          <tbody>
-            {liste.map((p) => (
-              <tr key={p.id}>
-                <td><strong>{p.nom}</strong></td>
-                <td className="small">{p.source === 'ia' ? 'Import IA' : 'Manuel'}</td>
-                <td className="small">{(p.evenements || []).length}</td>
-                <td><button className="btn btn-ghost btn-sm" onClick={() => onModifier(p)}>✏️</button></td>
-                <td><button className="btn btn-ghost btn-sm" onClick={() => onSupprimer(p.id)}>✕</button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      <div className="form-actions">
-        <button className="btn btn-primary" onClick={onNouvelle}>+ Nouvelle programmation</button>
-        <button className="btn btn-outline" onClick={onFermer}>Fermer</button>
-      </div>
-    </Modal>
-  );
-}
 
 function ModaleProduit({ produit, onValider, onFermer }) {
   const [f, setF] = useState(produit
@@ -5986,12 +5957,6 @@ export default function CahierDeChai() {
         return <ModaleImportIA scope={payload.scope} onImporter={importerReferentielIA} onFermer={fermer} />;
       case 'produit':
         return <ModaleProduit produit={payload.produit} onValider={payload.produit ? (f) => majProduit(payload.produit.id, f) : ajouterProduit} onFermer={fermer} />;
-      case 'programmations':
-        return <ModaleListeProgrammations programmations={programmations}
-          onNouvelle={() => ouvrir('programmation', {})}
-          onModifier={(p) => ouvrir('programmation', { programmation: p })}
-          onSupprimer={supprimerProgrammation}
-          onFermer={fermer} />;
       case 'programmation':
         return <ModaleProgrammation programmation={payload.programmation} produits={produits}
           onValider={payload.programmation ? (f) => majProgrammation(payload.programmation.id, f) : ajouterProgrammation} onFermer={fermer} />;
@@ -6033,6 +5998,7 @@ export default function CahierDeChai() {
     { id: 'releve', label: 'Relevé de cave', icone: '◷' },
     { id: 'cave', label: 'Cuverie & lots', icone: '◧' },
     { id: 'produits', label: 'Produits œnologiques', icone: '◇' },
+    { id: 'programmation', label: 'Programmation', icone: '◈' },
     { id: 'registre', label: 'Registre réglementaire', icone: '§' },
     { id: 'mise', label: 'Mise en bouteille', icone: '⬦' },
     { id: 'parametres', label: 'Paramètres', icone: '⚙' },
@@ -6048,7 +6014,7 @@ export default function CahierDeChai() {
         <div className="topbar-actions">
           <button className="btn btn-primary" onClick={() => ouvrir('apport')}>+ Apport de vendange</button>
           <button className="btn btn-ghost light" onClick={() => ouvrir('bulletinMulti')}>+ Analyser un bulletin</button>
-          <button className="btn btn-ghost light" onClick={() => ouvrir('programmations')}>+ Programmation</button>
+          <button className="btn btn-ghost light" onClick={() => { setVue('programmation'); setLotOuvert(null); }}>+ Programmation</button>
           <span className="muted small sync-status">
             {syncEtat.statut === 'en_cours' ? 'Synchronisation…'
               : syncEtat.statut === 'horsligne' ? 'Hors ligne — données locales'
@@ -7252,6 +7218,47 @@ export default function CahierDeChai() {
                     </section>
                   );
                 })
+              )}
+            </>
+          )}
+
+          {/* ===================== PROGRAMMATIONS ===================== */}
+          {vue === 'programmation' && (
+            <>
+              <header className="page-head">
+                <div className="page-head-row">
+                  <h1>Programmation</h1>
+                  <button className="btn btn-primary" onClick={() => ouvrir('programmation', {})}>+ Nouvelle programmation</button>
+                </div>
+                <p>Protocoles de vinification par densité (température, remontage, événements ponctuels), réutilisables sur plusieurs cuves.</p>
+              </header>
+
+              {Object.keys(programmations).length === 0 ? (
+                <EmptyState titre="Aucune programmation" texte="Crée un protocole à la main, ou importe un graphique avec l'IA."
+                  action={<button className="btn btn-primary" onClick={() => ouvrir('programmation', {})}>+ Nouvelle programmation</button>} />
+              ) : (
+                <table className="data-table">
+                  <thead><tr><th>Nom</th><th>Origine</th><th>Événements</th><th>Cuves actives</th><th></th><th></th></tr></thead>
+                  <tbody>
+                    {Object.values(programmations).sort((a, b) => a.nom.localeCompare(b.nom)).map((p) => {
+                      const cuvesActives = Object.values(lots).filter((l) => l.programmation && l.programmation.programmationId === p.id && l.statut !== 'archive');
+                      return (
+                        <tr key={p.id}>
+                          <td><strong>{p.nom}</strong>{p.notes ? <div className="muted small">{p.notes}</div> : null}</td>
+                          <td className="small">{p.source === 'ia' ? 'Import IA' : 'Manuel'}</td>
+                          <td className="small">{(p.evenements || []).length}</td>
+                          <td className="small">
+                            {cuvesActives.length === 0 ? '—' : cuvesActives.map((l) => (
+                              <button key={l.id} className="lien" style={{ marginRight: 6 }} onClick={() => ouvrirLot(l.id)}>{l.code}</button>
+                            ))}
+                          </td>
+                          <td><button className="btn btn-ghost btn-sm" onClick={() => ouvrir('programmation', { programmation: p })}>✏️</button></td>
+                          <td><button className="btn btn-ghost btn-sm" onClick={() => supprimerProgrammation(p.id)}>✕</button></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               )}
             </>
           )}
