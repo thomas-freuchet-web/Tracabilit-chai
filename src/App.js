@@ -7,6 +7,7 @@ import { fusionnerEtats } from './lib/fusionEtat';
 import { genererPdfCuve, telechargerBlob } from './lib/pdfRecap';
 import { genererPdfRegistre } from './lib/pdfRegistre';
 import { uploaderBulletin, ouvrirBulletinStorage, supprimerBulletinStorage } from './lib/storageBulletins';
+import { temperatureCible, coefficientRemontage, evenementsADeclencher, ecartTemperature } from './lib/programmation';
 import './App.css';
 
 /* ==========================================================================
@@ -332,6 +333,32 @@ function fichierEnBase64(file) {
 function volumeLot(lot) {
   if (!lot || !lot.contenants) return 0;
   return round2(lot.contenants.reduce((s, c) => s + (Number(c.volume) || 0), 0));
+}
+
+// Dernier point densité/température connu d'un lot, relevé de cave ou
+// analyse confondus — sert de référence à la programmation (activation,
+// vérification des seuils) sans dupliquer cette recherche à chaque appel.
+// Parcourt les opérations à l'envers plutôt que de trier par date+heure : la
+// précision de l'heure (HH:MM) ne suffit pas à départager deux relevés saisis
+// dans la même minute, alors que l'ordre d'ajout dans le tableau, lui, est
+// toujours fiable (les opérations sont ajoutées au fil de l'eau, jamais
+// réordonnées).
+function dernierPointDensite(lot) {
+  const ops = lot.operations || [];
+  for (let i = ops.length - 1; i >= 0; i--) {
+    const o = ops[i];
+    if (o.type === 'controle' && o.densite !== undefined && o.densite !== null) {
+      return { densite: Number(o.densite), temperature: o.temperature ?? null, date: o.date };
+    }
+    if (o.type === 'analyse' && o.valeurs && o.valeurs.densite !== undefined && o.valeurs.densite !== null) {
+      return {
+        densite: Number(o.valeurs.densite),
+        temperature: o.valeurs.temperature !== undefined ? Number(o.valeurs.temperature) : null,
+        date: o.date,
+      };
+    }
+  }
+  return null;
 }
 
 /* --- Mélange de deux compositions, pondéré par les volumes --- */
@@ -1393,7 +1420,7 @@ function ModaleControle({ lot, contenants, onValider, onFermer, controle, initia
   );
 }
 
-function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer, analyse }) {
+function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer, analyse, onRecommandations }) {
   const [f, setF] = useState(analyse ? {
     lotId: lot.id, date: analyse.date, heure: analyse.heure || nowTime(),
     contenantId: analyse.contenantId, source: analyse.source || 'interne',
@@ -1409,6 +1436,7 @@ function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer, analyse }
   const [fichierIA, setFichierIA] = useState(null);
   const [chargementIA, setChargementIA] = useState(false);
   const [erreurIA, setErreurIA] = useState('');
+  const [recommandationsIA, setRecommandationsIA] = useState(null); // [{ produitNom, dose, uniteDose, densiteDeclenchement, raison, retenue }]
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const setVal = (id, v) => setF((p) => ({ ...p, valeurs: { ...p.valeurs, [id]: v } }));
   const ajouterAutre = () => setF((p) => ({ ...p, autres: [...p.autres, { label: '', valeur: '' }] }));
@@ -1460,6 +1488,10 @@ function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer, analyse }
           : `${p.notes}\n${noteIA}`;
         return { ...p, valeurs: nouvellesValeurs, autres: nouveauxAutres, source: 'labo', date: data.date || p.date, notes };
       });
+
+      if ((data.recommandationsProduits || []).length > 0) {
+        setRecommandationsIA(data.recommandationsProduits.map((r) => ({ ...r, retenue: true })));
+      }
 
       // Joint aussi le fichier comme bulletin archivé, pour éviter de le réimporter.
       try {
@@ -1533,6 +1565,29 @@ function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer, analyse }
         </div>
       </Field>
       {erreurIA && <p className="inline-note warn">{erreurIA}</p>}
+      {recommandationsIA && (
+        <div className="stat-card" style={{ marginBottom: 12 }}>
+          <p className="muted small" style={{ marginTop: 0 }}>
+            Ce bulletin recommande {recommandationsIA.length > 1 ? 'ces produits' : 'ce produit'} — choisis lesquels
+            suivre (ils rejoindront la programmation de cette cuve, créée automatiquement en mode cliquable si
+            elle n'existe pas encore) :
+          </p>
+          {recommandationsIA.map((r, i) => (
+            <label key={i} className="checkbox-inline" style={{ display: 'flex', marginBottom: 4 }}>
+              <input type="checkbox" checked={r.retenue} onChange={(e) => setRecommandationsIA((prev) => prev.map((x, idx) => (idx === i ? { ...x, retenue: e.target.checked } : x)))} />
+              {' '}<strong>{r.produitNom}</strong>{r.dose ? ` — ${r.dose} ${r.uniteDose || ''}` : ''}{r.densiteDeclenchement ? ` à densité ${r.densiteDeclenchement}` : ' (dès que possible)'}
+              {r.raison ? <span className="muted"> · {r.raison}</span> : null}
+            </label>
+          ))}
+          <div className="form-actions" style={{ marginTop: 8 }}>
+            <button className="btn btn-outline btn-sm" onClick={() => {
+              onRecommandations(recommandationsIA.filter((r) => r.retenue));
+              setRecommandationsIA(null);
+            }}>Ajouter à la programmation</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setRecommandationsIA(null)}>Ignorer</button>
+          </div>
+        </div>
+      )}
 
       <div className="analyse-grid">
         {PARAMS_ANALYSE.map((p) => (
@@ -2860,6 +2915,268 @@ function ModaleImportIA({ scope, onImporter, onFermer }) {
   );
 }
 
+const TYPES_EVENEMENT_PROGRAMMATION = [
+  { id: 'delestage', label: 'Délestage' },
+  { id: 'o2', label: "Ajout d'O2 (micro-oxygénation)" },
+  { id: 'produit', label: 'Ajout de produit' },
+];
+
+function ModaleProgrammation({ programmation, produits, onValider, onFermer }) {
+  const ligneTemp = (d) => ({ id: uid('t'), densite: '', temperature: '', ...(d || {}) });
+  const ligneBande = (d) => ({ id: uid('b'), densiteHaute: '', densiteBasse: '', degressif: false, coefficient: '', coefficientDebut: '', coefficientFin: '', ...(d || {}) });
+  const ligneEvt = (d) => ({
+    id: uid('e'), type: 'delestage', mode: 'densite', valeur: '',
+    produitNom: '', dose: '', uniteDose: 'g_hl', pression: '3', dureeRef: '', volumeRef: '',
+    ...(d || {}),
+  });
+
+  const [f, setF] = useState(programmation ? {
+    nom: programmation.nom, notes: programmation.notes || '',
+    toleranceTemperature: String(programmation.toleranceTemperature ?? 2),
+    temperatures: (programmation.temperatures || []).map((t) => ligneTemp({ densite: t.densite === null ? '' : String(t.densite), temperature: String(t.temperature) })),
+    remontage: (programmation.remontage || []).map((b) => ligneBande({
+      densiteHaute: b.densiteHaute === null || b.densiteHaute === undefined ? '' : String(b.densiteHaute),
+      densiteBasse: b.densiteBasse === null || b.densiteBasse === undefined ? '' : String(b.densiteBasse),
+      degressif: b.coefficientDebut !== undefined && b.coefficientDebut !== null,
+      coefficient: b.coefficient !== undefined && b.coefficient !== null ? String(b.coefficient) : '',
+      coefficientDebut: b.coefficientDebut !== undefined && b.coefficientDebut !== null ? String(b.coefficientDebut) : '',
+      coefficientFin: b.coefficientFin !== undefined && b.coefficientFin !== null ? String(b.coefficientFin) : '',
+    })),
+    evenements: (programmation.evenements || []).map((e) => ligneEvt({
+      type: e.type, mode: (e.declencheur || {}).mode || 'densite', valeur: (e.declencheur || {}).valeur !== undefined ? String((e.declencheur || {}).valeur) : '',
+      produitNom: e.produitNom || '', dose: e.dose !== undefined && e.dose !== null ? String(e.dose) : '', uniteDose: e.uniteDose || 'g_hl',
+      pression: e.pression !== undefined ? String(e.pression) : '3', dureeRef: e.dureeRef !== undefined ? String(e.dureeRef) : '', volumeRef: e.volumeRef !== undefined ? String(e.volumeRef) : '',
+    })),
+  } : {
+    nom: '', notes: '', toleranceTemperature: '2',
+    temperatures: [ligneTemp()], remontage: [ligneBande()], evenements: [ligneEvt()],
+  });
+  const [fichierIA, setFichierIA] = useState(null);
+  const [chargementIA, setChargementIA] = useState(false);
+  const [erreurIA, setErreurIA] = useState('');
+
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const ajouterLigne = (section, fabrique) => setF((p) => ({ ...p, [section]: [...p[section], fabrique()] }));
+  const retirerLigne = (section, id) => setF((p) => ({ ...p, [section]: p[section].filter((l) => l.id !== id) }));
+  const setLigne = (section, id, champs) => setF((p) => ({ ...p, [section]: p[section].map((l) => (l.id === id ? { ...l, ...champs } : l)) }));
+
+  const importerAvecIA = async () => {
+    if (!fichierIA) { alert('Choisis une photo ou un PDF du protocole'); return; }
+    setChargementIA(true); setErreurIA('');
+    try {
+      const base64 = await fichierEnBase64(fichierIA);
+      const { data, error } = await supabase.functions.invoke('extraire-programmation', {
+        body: { fichierBase64: base64, mimeType: fichierIA.type },
+      });
+      if (error) {
+        let detail = error.message;
+        if (error.context && typeof error.context.json === 'function') {
+          try { const corps = await error.context.json(); if (corps && (corps.error || corps.message)) detail = corps.error || corps.message; } catch { /* corps non-JSON */ }
+        }
+        throw new Error(detail);
+      }
+      if (data && data.error) throw new Error(data.error);
+
+      setF((p) => ({
+        ...p,
+        nom: p.nom || data.nom || '',
+        temperatures: (data.temperatures || []).length ? data.temperatures.map((t) => ligneTemp({ densite: t.densite === null || t.densite === undefined ? '' : String(t.densite), temperature: String(t.temperature) })) : p.temperatures,
+        remontage: (data.remontage || []).length ? data.remontage.map((b) => ligneBande({
+          densiteHaute: b.densiteHaute === null || b.densiteHaute === undefined ? '' : String(b.densiteHaute),
+          densiteBasse: b.densiteBasse === null || b.densiteBasse === undefined ? '' : String(b.densiteBasse),
+          degressif: b.coefficientDebut !== undefined && b.coefficientDebut !== null,
+          coefficient: b.coefficient !== undefined && b.coefficient !== null ? String(b.coefficient) : '',
+          coefficientDebut: b.coefficientDebut !== undefined && b.coefficientDebut !== null ? String(b.coefficientDebut) : '',
+          coefficientFin: b.coefficientFin !== undefined && b.coefficientFin !== null ? String(b.coefficientFin) : '',
+        })) : p.remontage,
+        evenements: (data.evenements || []).length ? data.evenements.map((e) => ligneEvt({
+          type: e.type, mode: (e.declencheur || {}).mode || 'densite', valeur: (e.declencheur || {}).valeur !== undefined ? String((e.declencheur || {}).valeur) : '',
+          produitNom: e.produitNom || '', dose: e.dose !== undefined && e.dose !== null ? String(e.dose) : '', uniteDose: e.uniteDose || 'g_hl',
+          pression: e.pression !== undefined ? String(e.pression) : '3', dureeRef: e.dureeRef !== undefined ? String(e.dureeRef) : '', volumeRef: e.volumeRef !== undefined ? String(e.volumeRef) : '',
+        })) : p.evenements,
+      }));
+      setFichierIA(null);
+    } catch (e) {
+      setErreurIA("Impossible d'analyser le document : " + (e && e.message ? e.message : 'erreur inconnue'));
+    }
+    setChargementIA(false);
+  };
+
+  const valider = () => {
+    const temperatures = f.temperatures
+      .filter((t) => t.temperature !== '')
+      .map((t) => ({ densite: t.densite === '' ? null : Number(t.densite), temperature: Number(t.temperature) }));
+    const remontage = f.remontage
+      .filter((b) => b.degressif ? (b.coefficientDebut !== '' && b.coefficientFin !== '') : b.coefficient !== '')
+      .map((b) => ({
+        densiteHaute: b.densiteHaute === '' ? null : Number(b.densiteHaute),
+        densiteBasse: b.densiteBasse === '' ? null : Number(b.densiteBasse),
+        ...(b.degressif
+          ? { coefficientDebut: Number(b.coefficientDebut), coefficientFin: Number(b.coefficientFin) }
+          : { coefficient: Number(b.coefficient) }),
+      }));
+    const evenements = f.evenements
+      .filter((e) => e.valeur !== '')
+      .map((e) => ({
+        id: e.id, type: e.type, declencheur: { mode: e.mode, valeur: Number(e.valeur) },
+        ...(e.type === 'produit' ? { produitNom: e.produitNom, dose: e.dose === '' ? null : Number(e.dose), uniteDose: e.uniteDose } : {}),
+        ...(e.type === 'o2' ? { pression: Number(e.pression) || null, dureeRef: e.dureeRef === '' ? null : Number(e.dureeRef), volumeRef: e.volumeRef === '' ? null : Number(e.volumeRef) } : {}),
+      }));
+    if (onValider({ ...f, temperatures, remontage, evenements })) onFermer();
+  };
+
+  return (
+    <Modal title={programmation ? 'Modifier la programmation' : 'Nouvelle programmation'}
+      subtitle="Protocole de vinification par densité — température, remontage, événements ponctuels" onClose={onFermer} large>
+      <Field label="Nom"><input type="text" value={f.nom} onChange={(e) => set('nom', e.target.value)} placeholder="ex : Rouge classique — 2 volumes" /></Field>
+
+      <Field label="Importer un graphique avec l'IA" hint="Photo ou PDF du protocole (ex. graphique OENOTEAM) — pré-remplit les sections ci-dessous pour relecture, rien n'est activé automatiquement.">
+        <div className="quick-row">
+          <input type="file" accept="application/pdf,image/*" onChange={(e) => setFichierIA(e.target.files[0])} disabled={chargementIA} />
+          <button className="btn btn-outline btn-sm" onClick={importerAvecIA} disabled={chargementIA || !fichierIA}>
+            {chargementIA ? 'Lecture en cours…' : "🤖 Lire avec l'IA"}
+          </button>
+        </div>
+      </Field>
+      {erreurIA && <p className="inline-note warn">{erreurIA}</p>}
+
+      <div className="stat-card" style={{ marginBottom: 12 }}>
+        <div className="panel-head" style={{ marginBottom: 8 }}>
+          <span className="muted small">Température de consigne (par densité)</span>
+          <button className="btn btn-ghost btn-sm" onClick={() => ajouterLigne('temperatures', ligneTemp)}>+ Palier</button>
+        </div>
+        {f.temperatures.map((t) => (
+          <div className="field-grid" key={t.id} style={{ alignItems: 'flex-end' }}>
+            <Field label="Densité" hint="Vide = encuvage (avant le 1er palier)"><input type="number" value={t.densite} onChange={(e) => setLigne('temperatures', t.id, { densite: e.target.value })} /></Field>
+            <Field label="Température (°C)"><input type="number" step="0.1" value={t.temperature} onChange={(e) => setLigne('temperatures', t.id, { temperature: e.target.value })} /></Field>
+            <button className="btn btn-ghost btn-sm" onClick={() => retirerLigne('temperatures', t.id)}>✕</button>
+          </div>
+        ))}
+        <Field label="Tolérance avant alerte (°C)" hint="Écart accepté avec la consigne">
+          <input type="number" step="0.1" value={f.toleranceTemperature} onChange={(e) => set('toleranceTemperature', e.target.value)} style={{ maxWidth: 120 }} />
+        </Field>
+      </div>
+
+      <div className="stat-card" style={{ marginBottom: 12 }}>
+        <div className="panel-head" style={{ marginBottom: 8 }}>
+          <span className="muted small">Volume de remontage (fois le volume de la cuve, par bande de densité)</span>
+          <button className="btn btn-ghost btn-sm" onClick={() => ajouterLigne('remontage', ligneBande)}>+ Bande</button>
+        </div>
+        {f.remontage.map((b) => (
+          <div key={b.id} style={{ marginBottom: 8 }}>
+            <div className="field-grid" style={{ alignItems: 'flex-end' }}>
+              <Field label="Densité haute" hint="Vide = encuvage"><input type="number" value={b.densiteHaute} onChange={(e) => setLigne('remontage', b.id, { densiteHaute: e.target.value })} /></Field>
+              <Field label="Densité basse" hint="Vide = fin FA"><input type="number" value={b.densiteBasse} onChange={(e) => setLigne('remontage', b.id, { densiteBasse: e.target.value })} /></Field>
+              <label className="checkbox-inline muted small">
+                <input type="checkbox" checked={b.degressif} onChange={(e) => setLigne('remontage', b.id, { degressif: e.target.checked })} /> Dégressif
+              </label>
+              <button className="btn btn-ghost btn-sm" onClick={() => retirerLigne('remontage', b.id)}>✕</button>
+            </div>
+            <div className="field-grid">
+              {b.degressif ? (
+                <>
+                  <Field label="Coefficient de début"><input type="number" step="0.05" value={b.coefficientDebut} onChange={(e) => setLigne('remontage', b.id, { coefficientDebut: e.target.value })} /></Field>
+                  <Field label="Coefficient de fin"><input type="number" step="0.05" value={b.coefficientFin} onChange={(e) => setLigne('remontage', b.id, { coefficientFin: e.target.value })} /></Field>
+                </>
+              ) : (
+                <Field label="Coefficient (fois le volume)"><input type="number" step="0.05" value={b.coefficient} onChange={(e) => setLigne('remontage', b.id, { coefficient: e.target.value })} /></Field>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="stat-card" style={{ marginBottom: 12 }}>
+        <div className="panel-head" style={{ marginBottom: 8 }}>
+          <span className="muted small">Événements ponctuels (délestage, ajout d'O2, ajout de produit)</span>
+          <button className="btn btn-ghost btn-sm" onClick={() => ajouterLigne('evenements', ligneEvt)}>+ Événement</button>
+        </div>
+        {f.evenements.map((e) => (
+          <div key={e.id} style={{ marginBottom: 8, borderTop: '1px solid var(--stone-200)', paddingTop: 8 }}>
+            <div className="field-grid" style={{ alignItems: 'flex-end' }}>
+              <Field label="Type">
+                <select value={e.type} onChange={(ev) => setLigne('evenements', e.id, { type: ev.target.value })}>
+                  {TYPES_EVENEMENT_PROGRAMMATION.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+                </select>
+              </Field>
+              <Field label="Déclencheur">
+                <select value={e.mode} onChange={(ev) => setLigne('evenements', e.id, { mode: ev.target.value })}>
+                  <option value="densite">À cette densité</option>
+                  <option value="delta_densite">Points de densité perdus depuis l'activation</option>
+                </select>
+              </Field>
+              <Field label={e.mode === 'densite' ? 'Densité' : 'Points perdus (ex. -10)'}>
+                <input type="number" value={e.valeur} onChange={(ev) => setLigne('evenements', e.id, { valeur: e.mode === 'delta_densite' && Number(ev.target.value) > 0 ? String(-Number(ev.target.value)) : ev.target.value })} />
+              </Field>
+              <button className="btn btn-ghost btn-sm" onClick={() => retirerLigne('evenements', e.id)}>✕</button>
+            </div>
+            {e.type === 'produit' && (
+              <div className="field-grid">
+                <Field label="Produit" hint="Créé automatiquement au référentiel s'il n'existe pas encore">
+                  <input type="text" list="produits-programmation" value={e.produitNom} onChange={(ev) => setLigne('evenements', e.id, { produitNom: ev.target.value })} />
+                  <datalist id="produits-programmation">
+                    {Object.values(produits).map((p) => <option key={p.id} value={p.nom} />)}
+                  </datalist>
+                </Field>
+                <Field label="Dose"><input type="number" step="0.01" value={e.dose} onChange={(ev) => setLigne('evenements', e.id, { dose: ev.target.value })} /></Field>
+                <Field label="Unité">
+                  <select value={e.uniteDose} onChange={(ev) => setLigne('evenements', e.id, { uniteDose: ev.target.value })}>
+                    {DOSES_PROPOSEES.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+                  </select>
+                </Field>
+              </div>
+            )}
+            {e.type === 'o2' && (
+              <div className="field-grid">
+                <Field label="Pression (bar)"><input type="number" step="0.1" value={e.pression} onChange={(ev) => setLigne('evenements', e.id, { pression: ev.target.value })} /></Field>
+                <Field label="Durée de référence (min)"><input type="number" step="0.1" value={e.dureeRef} onChange={(ev) => setLigne('evenements', e.id, { dureeRef: ev.target.value })} /></Field>
+                <Field label="Volume de référence (hL)"><input type="number" step="0.1" value={e.volumeRef} onChange={(ev) => setLigne('evenements', e.id, { volumeRef: ev.target.value })} /></Field>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <Field label="Notes" hint="Optionnel"><textarea value={f.notes} onChange={(e) => set('notes', e.target.value)} /></Field>
+
+      <div className="form-actions">
+        <button className="btn btn-primary" onClick={valider}>{programmation ? 'Enregistrer' : 'Créer la programmation'}</button>
+        <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
+      </div>
+    </Modal>
+  );
+}
+
+function ModaleListeProgrammations({ programmations, onNouvelle, onModifier, onSupprimer, onFermer }) {
+  const liste = Object.values(programmations).sort((a, b) => a.nom.localeCompare(b.nom));
+  return (
+    <Modal title="Programmations" subtitle="Protocoles de vinification par densité, réutilisables sur plusieurs cuves" onClose={onFermer}>
+      {liste.length === 0 ? (
+        <p className="muted">Aucune programmation enregistrée pour le moment.</p>
+      ) : (
+        <table className="data-table compact">
+          <thead><tr><th>Nom</th><th>Origine</th><th>Événements</th><th></th><th></th></tr></thead>
+          <tbody>
+            {liste.map((p) => (
+              <tr key={p.id}>
+                <td><strong>{p.nom}</strong></td>
+                <td className="small">{p.source === 'ia' ? 'Import IA' : 'Manuel'}</td>
+                <td className="small">{(p.evenements || []).length}</td>
+                <td><button className="btn btn-ghost btn-sm" onClick={() => onModifier(p)}>✏️</button></td>
+                <td><button className="btn btn-ghost btn-sm" onClick={() => onSupprimer(p.id)}>✕</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div className="form-actions">
+        <button className="btn btn-primary" onClick={onNouvelle}>+ Nouvelle programmation</button>
+        <button className="btn btn-outline" onClick={onFermer}>Fermer</button>
+      </div>
+    </Modal>
+  );
+}
+
 function ModaleProduit({ produit, onValider, onFermer }) {
   const [f, setF] = useState(produit
     ? { nom: produit.nom, categorie: produit.categorie, unite: produit.unite, seuil: String(produit.seuil || ''), fournisseur: produit.fournisseur || '', manipType: produit.manipType || '' }
@@ -3189,6 +3506,7 @@ export default function CahierDeChai() {
   const [lots, setLots] = useState(() => loadLS('cdc_lots', {}));
   const [conditionnements, setConditionnements] = useState(() => loadLS('cdc_conditionnements', []));
   const [ordresTravail, setOrdresTravail] = useState(() => loadLS('cdc_ordres_travail', []));
+  const [programmations, setProgrammations] = useState(() => loadLS('cdc_programmations', {}));
 
   useEffect(() => { localStorage.setItem('cdc_domaine', JSON.stringify(domaine)); }, [domaine]);
   useEffect(() => { localStorage.setItem('cdc_lieux', JSON.stringify(lieux)); }, [lieux]);
@@ -3199,6 +3517,7 @@ export default function CahierDeChai() {
   useEffect(() => { localStorage.setItem('cdc_lots', JSON.stringify(lots)); }, [lots]);
   useEffect(() => { localStorage.setItem('cdc_conditionnements', JSON.stringify(conditionnements)); }, [conditionnements]);
   useEffect(() => { localStorage.setItem('cdc_ordres_travail', JSON.stringify(ordresTravail)); }, [ordresTravail]);
+  useEffect(() => { localStorage.setItem('cdc_programmations', JSON.stringify(programmations)); }, [programmations]);
 
   /* ---------- Synchronisation Supabase (mêmes données sur tous les appareils) ----------
      Plusieurs appareils (ou plusieurs personnes sur le même compte) peuvent
@@ -3221,8 +3540,8 @@ export default function CahierDeChai() {
   const etatDejaVuRef = useRef(null); // snapshot du dernier état vu, pour distinguer une vraie saisie du simple montage
 
   useEffect(() => {
-    etatActuelRef.current = { domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements, ordresTravail };
-  }, [domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements, ordresTravail]);
+    etatActuelRef.current = { domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements, ordresTravail, programmations };
+  }, [domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements, ordresTravail, programmations]);
 
   const appliquerEtat = (etat) => {
     applicationDistanteEnCours.current = true;
@@ -3235,6 +3554,7 @@ export default function CahierDeChai() {
     setLots(etat.lots || {});
     setConditionnements(etat.conditionnements || []);
     setOrdresTravail(etat.ordresTravail || []);
+    setProgrammations(etat.programmations || {});
   };
 
   // Fusionne l'état local avec ce qui est actuellement sur le serveur (utile
@@ -3283,9 +3603,9 @@ export default function CahierDeChai() {
     if (!user) { chargementInitialFait.current = false; baseCloudRef.current = null; return; }
     let annule = false;
     const enAttente = !!localStorage.getItem('cdc_pending_sync');
-    const localAuMontage = { domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements, ordresTravail };
+    const localAuMontage = { domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements, ordresTravail, programmations };
     const baseDepart = enAttente
-      ? { domaine: {}, lieux: {}, contenants: {}, cepages: {}, parcelles: {}, produits: {}, lots: {}, conditionnements: [], ordresTravail: [] }
+      ? { domaine: {}, lieux: {}, contenants: {}, cepages: {}, parcelles: {}, produits: {}, lots: {}, conditionnements: [], ordresTravail: [], programmations: {} }
       : localAuMontage;
     (async () => {
       try {
@@ -3318,7 +3638,7 @@ export default function CahierDeChai() {
   // l'état local comme référence de fusion sans précaution.
   useEffect(() => {
     if (!user) { etatDejaVuRef.current = null; return; }
-    const snapshot = JSON.stringify({ domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements, ordresTravail });
+    const snapshot = JSON.stringify({ domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements, ordresTravail, programmations });
     const premiereFois = etatDejaVuRef.current === null;
     const changementReel = !premiereFois && etatDejaVuRef.current !== snapshot;
     etatDejaVuRef.current = snapshot;
@@ -3331,7 +3651,7 @@ export default function CahierDeChai() {
     minuteurSync.current = setTimeout(synchroniser, 1000);
     return () => clearTimeout(minuteurSync.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements, ordresTravail]);
+  }, [user, domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements, ordresTravail, programmations]);
 
   // Signal Realtime : dès qu'un autre appareil (ou collègue) vient de
   // sauvegarder, on fusionne tout de suite au lieu d'attendre la prochaine
@@ -3366,6 +3686,11 @@ export default function CahierDeChai() {
   const [modale, setModale] = useState(null); // {type, payload}
   const ouvrir = (type, payload = {}) => setModale({ type, payload });
   const fermer = () => setModale(null);
+  // Alertes température actives (programmation) — en mémoire seulement, pas
+  // persistées : elles se recalculent à chaque relevé, inutile de les
+  // synchroniser entre appareils.
+  const [alertesTemperature, setAlertesTemperature] = useState([]);
+  const ignorerAlerteTemperature = (id) => setAlertesTemperature((prev) => prev.filter((a) => a.id !== id));
 
   // Valider une tâche de l'ordre du jour : une tâche libre se coche
   // directement ; une tâche reliée à une vraie opération ouvre le
@@ -3973,6 +4298,7 @@ export default function CahierDeChai() {
       heure: nowTime(), contenantId: form.contenantId,
       temperature: t, densite: d, notes: form.notes || '', auteur: user.id,
     });
+    verifierProgrammation(form.lotId, { densite: d, temperature: t, date: form.date });
     return true;
   };
 
@@ -3989,6 +4315,7 @@ export default function CahierDeChai() {
           : o)),
       },
     }));
+    verifierProgrammation(lotId, { densite: d, temperature: t, date: form.date });
     return true;
   };
 
@@ -4007,6 +4334,15 @@ export default function CahierDeChai() {
     .map((a) => ({ label: (a.label || '').trim(), valeur: (a.valeur || '').trim() }))
     .filter((a) => a.label && a.valeur);
 
+  // Extrait densité/température d'un dict "valeurs" d'analyse (texte libre,
+  // ex. "< 5") pour la programmation — ignore ce qui n'est pas un nombre
+  // plutôt que de planter le suivi sur une mention non chiffrée.
+  const pointDepuisValeurs = (valeurs, date) => {
+    const d = Number(valeurs.densite);
+    const t = Number(valeurs.temperature);
+    return { densite: valeurs.densite !== undefined && !Number.isNaN(d) ? d : null, temperature: valeurs.temperature !== undefined && !Number.isNaN(t) ? t : null, date };
+  };
+
   const enregistrerAnalyse = (form) => {
     const valeurs = nettoyerValeurs(form.valeurs);
     const autres = nettoyerAutres(form.autres);
@@ -4016,6 +4352,7 @@ export default function CahierDeChai() {
       source: form.source || 'interne', valeurs, autres, bulletins: form.bulletins || [],
       notes: form.notes || '', auteur: user.id,
     });
+    verifierProgrammation(form.lotId, pointDepuisValeurs(valeurs, form.date));
     return true;
   };
 
@@ -4032,6 +4369,7 @@ export default function CahierDeChai() {
           : o)),
       },
     }));
+    verifierProgrammation(lotId, pointDepuisValeurs(valeurs, form.date));
     return true;
   };
 
@@ -4042,11 +4380,13 @@ export default function CahierDeChai() {
       const valeurs = nettoyerValeurs(ech.valeurs);
       const autres = nettoyerAutres(ech.autres);
       if (Object.keys(valeurs).length === 0 && autres.length === 0) return;
+      const date = ech.date || today();
       ajouterOperation(ech.lotId, {
-        type: 'analyse', date: ech.date || today(), heure: nowTime(), contenantId: ech.contenantId,
+        type: 'analyse', date, heure: nowTime(), contenantId: ech.contenantId,
         source: 'labo', valeurs, autres, bulletins: ech.bulletins || [],
         notes: ech.notes || '', auteur: user.id,
       });
+      verifierProgrammation(ech.lotId, pointDepuisValeurs(valeurs, date));
       compte += 1;
     });
     return compte;
@@ -4686,6 +5026,194 @@ export default function CahierDeChai() {
   const supprimerProduit = (id) => {
     if (!window.confirm('Supprimer ce produit et son historique de stock ?')) return;
     setProduits((p) => { const n = { ...p }; delete n[id]; return n; });
+  };
+
+  /* =========================================================================
+     PROGRAMMATIONS — protocole de vinification par densité (voir
+     src/lib/programmation.js pour la logique de suivi)
+     ========================================================================= */
+
+  const ajouterProgrammation = (f) => {
+    if (!f.nom || !f.nom.trim()) { alert('Indique un nom pour cette programmation'); return false; }
+    const id = uid('prog');
+    setProgrammations((p) => ({
+      ...p,
+      [id]: {
+        id, nom: f.nom.trim(), notes: f.notes || '', source: f.source || 'manuel', creeLe: new Date().toISOString(),
+        temperatures: f.temperatures || [], toleranceTemperature: Number(f.toleranceTemperature) || 2,
+        remontage: f.remontage || [], evenements: f.evenements || [],
+      },
+    }));
+    return true;
+  };
+  const majProgrammation = (id, f) => {
+    if (!f.nom || !f.nom.trim()) { alert('Indique un nom pour cette programmation'); return false; }
+    setProgrammations((p) => ({
+      ...p,
+      [id]: {
+        ...p[id], nom: f.nom.trim(), notes: f.notes || '',
+        temperatures: f.temperatures || [], toleranceTemperature: Number(f.toleranceTemperature) || 2,
+        remontage: f.remontage || [], evenements: f.evenements || [],
+      },
+    }));
+    return true;
+  };
+  const supprimerProgrammation = (id) => {
+    if (!window.confirm("Supprimer cette programmation ? Les cuves qui l'utilisent ne seront plus suivies.")) return;
+    setProgrammations((p) => { const n = { ...p }; delete n[id]; return n; });
+    setLots((prev) => {
+      const next = { ...prev };
+      Object.keys(next).forEach((lotId) => {
+        if (next[lotId].programmation && next[lotId].programmation.programmationId === id) {
+          next[lotId] = { ...next[lotId], programmation: null };
+        }
+      });
+      return next;
+    });
+  };
+
+  // Active/désactive/reconfigure le suivi d'une programmation sur une cuve.
+  // La densité au moment de l'activation sert de référence aux déclencheurs
+  // relatifs ("10 points après activation") — voir evenementsADeclencher.
+  const activerProgrammation = (lotId, programmationId, mode) => {
+    const lot = lots[lotId];
+    const point = dernierPointDensite(lot);
+    const densiteActivation = point ? point.densite : null;
+    majLot(lotId, {
+      programmation: {
+        programmationId, mode: mode || 'manuel', densiteActivation,
+        evenementsDeclenches: [], evenementsSupplementaires: [], recommandationsEnAttente: [],
+      },
+    });
+  };
+  const desactiverProgrammation = (lotId) => majLot(lotId, { programmation: null });
+  const basculerModeProgrammation = (lotId) => {
+    const lot = lots[lotId];
+    if (!lot.programmation) return;
+    majLot(lotId, { programmation: { ...lot.programmation, mode: lot.programmation.mode === 'auto' ? 'manuel' : 'auto' } });
+  };
+
+  // Crée dans l'ordre de travail la tâche correspondant à un événement de
+  // programmation déclenché (délestage, ajout d'O2, ajout de produit) — même
+  // structure "details" que la planification manuelle de ces mêmes tâches.
+  const creerTacheDepuisEvenement = (lotId, evenement) => {
+    const lot = lots[lotId];
+    const volume = volumeLot(lot);
+    const titrePrefixe = `Programmation — ${lot.code}`;
+    if (evenement.type === 'delestage') {
+      ajouterOrdreTravail({ date: today(), type: 'travail', titre: `${titrePrefixe} : Délestage`, lotId, details: { action: 'Délestage' } });
+    } else if (evenement.type === 'o2') {
+      ajouterOrdreTravail({
+        date: today(), type: 'travail', titre: `${titrePrefixe} : Ajout d'O2`, lotId,
+        details: {
+          action: ACTION_O2,
+          pression: evenement.pression !== null && evenement.pression !== undefined ? String(evenement.pression) : '',
+          dureeRef: evenement.dureeRef !== null && evenement.dureeRef !== undefined ? String(evenement.dureeRef) : '',
+          volumeRef: evenement.volumeRef !== null && evenement.volumeRef !== undefined ? String(evenement.volumeRef) : '',
+        },
+      });
+    } else if (evenement.type === 'produit') {
+      const produit = Object.values(produits).find((p) => p.nom.toLowerCase() === (evenement.produitNom || '').toLowerCase());
+      const quantite = evenement.dose && produit
+        ? calculerQuantiteDepuisDose(evenement.dose, evenement.uniteDose || DOSE_PAR_DEFAUT[produit.unite], volume, produit.unite)
+        : null;
+      ajouterOrdreTravail({
+        date: today(), type: 'ajout', titre: `${titrePrefixe} : ${evenement.produitNom}`, lotId,
+        details: { lignes: produit ? [{ produitId: produit.id, quantite: quantite !== null ? String(quantite) : '', numeroLotFournisseur: '' }] : [] },
+        notes: produit ? '' : `Produit "${evenement.produitNom}" introuvable dans le référentiel — ajoute-le d'abord dans Produits œnologiques.`,
+      });
+    }
+  };
+
+  // Alerte email — best effort : l'alerte in-app (alertesTemperature) reste
+  // affichée même si l'envoi échoue (pas de secret configuré, hors ligne...).
+  const envoyerAlerteEmailTemperature = async (lot, point, cible) => {
+    try {
+      await supabase.functions.invoke('envoyer-alerte-email', {
+        body: { lotCode: lot.code, densite: point.densite, temperatureMesuree: point.temperature, temperatureCible: cible, date: point.date },
+      });
+    } catch { /* voir commentaire ci-dessus */ }
+  };
+
+  // Point d'entrée unique appelé après chaque relevé T°/densité ou analyse
+  // portant une densité, pour une cuve suivant une programmation : calcule
+  // l'écart à la consigne de température (alerte si hors tolérance) et
+  // déclenche les événements du protocole (+ ceux ajoutés depuis un bulletin
+  // d'analyse) dont le seuil vient d'être franchi.
+  //
+  // `point` (densité/température/date) est celui qu'on vient d'enregistrer,
+  // passé directement par l'appelant plutôt que relu depuis `lots` : juste
+  // après un setLots/ajouterOperation, l'état React n'a pas encore été
+  // recalculé dans cette fermeture, donc `lots[lotId].operations` serait en
+  // retard d'un cran. `lot.programmation`, lui, n'est pas touché par ces
+  // opérations et peut sans risque être lu depuis l'état courant.
+  const verifierProgrammation = (lotId, point) => {
+    const lot = lots[lotId];
+    if (!lot || !lot.programmation || !point || point.densite === null || point.densite === undefined) return;
+    const prog = lot.programmation.programmationId ? programmations[lot.programmation.programmationId] : null;
+
+    if (prog && point.temperature !== null && point.temperature !== undefined) {
+      const cible = temperatureCible(prog, point.densite);
+      const ecart = ecartTemperature(prog, point.densite, point.temperature);
+      const tolerance = Number(prog.toleranceTemperature) || 2;
+      if (ecart !== null && Math.abs(ecart) > tolerance) {
+        setAlertesTemperature((prev) => (prev.some((a) => a.lotId === lotId && a.date === point.date)
+          ? prev
+          : [...prev, { id: uid('alerte'), lotId, lotCode: lot.code, date: point.date, temperatureMesuree: point.temperature, temperatureCible: cible, densite: point.densite }]));
+        envoyerAlerteEmailTemperature(lot, point, cible);
+      }
+    }
+
+    const evenements = [...(prog ? prog.evenements || [] : []), ...(lot.programmation.evenementsSupplementaires || [])];
+    const aDeclencher = evenementsADeclencher(evenements, lot.programmation.evenementsDeclenches, point.densite, lot.programmation.densiteActivation);
+    if (!aDeclencher.length) return;
+
+    if (lot.programmation.mode === 'auto') aDeclencher.forEach((e) => creerTacheDepuisEvenement(lotId, e));
+
+    majLot(lotId, {
+      programmation: {
+        ...lot.programmation,
+        evenementsDeclenches: [...(lot.programmation.evenementsDeclenches || []), ...aDeclencher.map((e) => e.id)],
+        recommandationsEnAttente: lot.programmation.mode === 'auto'
+          ? (lot.programmation.recommandationsEnAttente || [])
+          : [...(lot.programmation.recommandationsEnAttente || []), ...aDeclencher.map((e) => e.id)],
+      },
+    });
+  };
+
+  // Depuis le panneau "Suivi de la programmation" : crée la tâche pour une
+  // recommandation en attente (mode manuel), ou l'écarte sans rien créer.
+  const confirmerRecommandation = (lotId, evenementId) => {
+    const lot = lots[lotId];
+    const prog = lot.programmation.programmationId ? programmations[lot.programmation.programmationId] : null;
+    const evenement = [...(prog ? prog.evenements || [] : []), ...(lot.programmation.evenementsSupplementaires || [])].find((e) => e.id === evenementId);
+    if (evenement) creerTacheDepuisEvenement(lotId, evenement);
+    majLot(lotId, { programmation: { ...lot.programmation, recommandationsEnAttente: lot.programmation.recommandationsEnAttente.filter((id) => id !== evenementId) } });
+  };
+  const ignorerRecommandation = (lotId, evenementId) => {
+    const lot = lots[lotId];
+    majLot(lotId, { programmation: { ...lot.programmation, recommandationsEnAttente: lot.programmation.recommandationsEnAttente.filter((id) => id !== evenementId) } });
+  };
+
+  // Produits recommandés par un bulletin d'analyse (confirmés un par un dans
+  // ModaleAnalyse) : rejoignent le suivi de la cuve comme des événements
+  // supplémentaires, exactement comme ceux du protocole — crée le suivi
+  // (mode manuel par défaut) si la cuve n'en avait pas encore.
+  const ajouterRecommandationsProgrammation = (lotId, recommandations) => {
+    if (!recommandations.length) return;
+    const lot = lots[lotId];
+    const densiteActuelle = dernierPointDensite(lot)?.densite ?? null;
+    const base = lot.programmation || {
+      programmationId: null, mode: 'manuel', densiteActivation: densiteActuelle,
+      evenementsDeclenches: [], evenementsSupplementaires: [], recommandationsEnAttente: [],
+    };
+    const nouveaux = recommandations.map((r) => ({
+      id: uid('evt'), type: 'produit',
+      declencheur: { mode: 'densite', valeur: r.densiteDeclenchement !== undefined && r.densiteDeclenchement !== null ? Number(r.densiteDeclenchement) : (densiteActuelle ?? 0) },
+      produitNom: r.produitNom, dose: r.dose !== undefined && r.dose !== null ? Number(r.dose) : null, uniteDose: r.uniteDose || 'g_hl',
+    }));
+    majLot(lotId, { programmation: { ...base, evenementsSupplementaires: [...(base.evenementsSupplementaires || []), ...nouveaux] } });
+    alert(`${nouveaux.length} produit${nouveaux.length > 1 ? 's' : ''} ajouté${nouveaux.length > 1 ? 's' : ''} au suivi de ${lot.code} — visible dans le panneau "Programmation" de la fiche cuve.`);
   };
   const supprimerMouvementProduit = (produitId, mouvementId) => {
     const prod = produits[produitId];
@@ -5402,7 +5930,9 @@ export default function CahierDeChai() {
           onValider={payload.ajout ? (f) => majAjoutProduit(payload.lotId, payload.ajout.id, f) : avecOrdreLie(ajouterProduitAuLot, payload._ordreId)} onFermer={fermer} />;
       case 'analyse':
         return <ModaleAnalyse lot={lots[payload.lotId]} contenants={contenants} userId={user.uid} analyse={payload.analyse}
-          onValider={payload.analyse ? (f) => majAnalyse(payload.lotId, payload.analyse.id, f) : avecOrdreLie(enregistrerAnalyse, payload._ordreId)} onFermer={fermer} />;
+          onValider={payload.analyse ? (f) => majAnalyse(payload.lotId, payload.analyse.id, f) : avecOrdreLie(enregistrerAnalyse, payload._ordreId)}
+          onRecommandations={(recommandations) => ajouterRecommandationsProgrammation(payload.lotId, recommandations)}
+          onFermer={fermer} />;
       case 'controle':
         return <ModaleControle lot={lots[payload.lotId]} contenants={contenants} controle={payload.controle} initial={payload.initial}
           onValider={payload.controle ? (f) => majControle(payload.lotId, payload.controle.id, f) : avecOrdreLie(enregistrerControle, payload._ordreId)} onFermer={fermer} />;
@@ -5447,6 +5977,15 @@ export default function CahierDeChai() {
         return <ModaleImportIA scope={payload.scope} onImporter={importerReferentielIA} onFermer={fermer} />;
       case 'produit':
         return <ModaleProduit produit={payload.produit} onValider={payload.produit ? (f) => majProduit(payload.produit.id, f) : ajouterProduit} onFermer={fermer} />;
+      case 'programmations':
+        return <ModaleListeProgrammations programmations={programmations}
+          onNouvelle={() => ouvrir('programmation', {})}
+          onModifier={(p) => ouvrir('programmation', { programmation: p })}
+          onSupprimer={supprimerProgrammation}
+          onFermer={fermer} />;
+      case 'programmation':
+        return <ModaleProgrammation programmation={payload.programmation} produits={produits}
+          onValider={payload.programmation ? (f) => majProgrammation(payload.programmation.id, f) : ajouterProgrammation} onFermer={fermer} />;
       case 'entreeStock':
         return <ModaleEntreeStock produit={produits[payload.produitId]} mouvement={payload.mouvement}
           onValider={payload.mouvement ? (f) => majEntreeStock(payload.produitId, payload.mouvement.id, f) : entrerStock} onFermer={fermer} />;
@@ -5500,6 +6039,7 @@ export default function CahierDeChai() {
         <div className="topbar-actions">
           <button className="btn btn-primary" onClick={() => ouvrir('apport')}>+ Apport de vendange</button>
           <button className="btn btn-ghost light" onClick={() => ouvrir('bulletinMulti')}>+ Analyser un bulletin</button>
+          <button className="btn btn-ghost light" onClick={() => ouvrir('programmations')}>+ Programmation</button>
           <span className="muted small sync-status">
             {syncEtat.statut === 'en_cours' ? 'Synchronisation…'
               : syncEtat.statut === 'horsligne' ? 'Hors ligne — données locales'
@@ -5534,6 +6074,18 @@ export default function CahierDeChai() {
         </nav>
 
         <main className="main-panel">
+          {alertesTemperature.length > 0 && (
+            <div className="info-banner warn" style={{ marginBottom: 16 }}>
+              {alertesTemperature.map((a) => (
+                <div key={a.id} className="ref-list-row">
+                  <span>
+                    ⚠ <strong>{a.lotCode}</strong> — {a.temperatureMesuree} °C relevé le {a.date} pour une consigne de {a.temperatureCible ?? '—'} °C (densité {a.densite})
+                  </span>
+                  <button className="btn btn-ghost btn-sm" onClick={() => ignorerAlerteTemperature(a.id)}>Ignorer</button>
+                </div>
+              ))}
+            </div>
+          )}
           {/* ===================== ACCUEIL ===================== */}
           {vue === 'accueil' && (
             <>
@@ -5906,6 +6458,69 @@ export default function CahierDeChai() {
                   <button className="btn btn-ghost btn-sm" onClick={() => ouvrir('editLot', { lotId: lot.id })}>Modifier</button>
                   <button className="btn btn-danger btn-sm" onClick={() => supprimerLot(lot.id)}>Supprimer</button>
                 </div>
+
+                {(() => {
+                  const progActive = lot.programmation && lot.programmation.programmationId ? programmations[lot.programmation.programmationId] : null;
+                  const point = dernierPointDensite(lot);
+                  const recommandations = lot.programmation ? (lot.programmation.recommandationsEnAttente || []) : [];
+                  const tousEvenements = lot.programmation ? [...(progActive ? progActive.evenements || [] : []), ...(lot.programmation.evenementsSupplementaires || [])] : [];
+                  return (
+                    <div className="panel" style={{ marginBottom: 12 }}>
+                      <div className="panel-head">
+                        <h3 className="panel-title">Programmation</h3>
+                        <div className="quick-row">
+                          <select value={(lot.programmation && lot.programmation.programmationId) || ''}
+                            onChange={(e) => (e.target.value
+                              ? activerProgrammation(lot.id, e.target.value, (lot.programmation && lot.programmation.mode) || 'manuel')
+                              : desactiverProgrammation(lot.id))}>
+                            <option value="">Aucune</option>
+                            {Object.values(programmations).map((p) => <option key={p.id} value={p.id}>{p.nom}</option>)}
+                          </select>
+                          {lot.programmation && lot.programmation.programmationId && (
+                            <button className="btn btn-outline btn-sm" onClick={() => basculerModeProgrammation(lot.id)}>
+                              Mode : {lot.programmation.mode === 'auto' ? 'Automatique' : 'Cliquable'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {!lot.programmation?.programmationId && (
+                        <p className="muted small" style={{ marginTop: 0 }}>
+                          Aucune programmation active — sélectionne un protocole pour suivre automatiquement le
+                          remontage, les événements (délestage, O2, produits) et les alertes de température.
+                        </p>
+                      )}
+                      {progActive && point && (
+                        <p className="muted small" style={{ marginTop: 0 }}>
+                          Densité actuelle : <strong>{point.densite}</strong>
+                          {' '}· Remontage recommandé : <strong>{coefficientRemontage(progActive, point.densite) ?? '—'} fois le volume</strong>
+                          {' '}· Consigne T° : <strong>{temperatureCible(progActive, point.densite) ?? '—'} °C</strong>
+                        </p>
+                      )}
+                      {progActive && !point && (
+                        <p className="muted small" style={{ marginTop: 0 }}>Enregistre un premier relevé de densité pour activer le suivi.</p>
+                      )}
+                      {recommandations.length > 0 && (
+                        <div className="stat-card" style={{ marginTop: 8 }}>
+                          <p className="muted small" style={{ marginTop: 0 }}>Recommandations en attente (mode cliquable) :</p>
+                          {recommandations.map((evtId) => {
+                            const evt = tousEvenements.find((e) => e.id === evtId);
+                            if (!evt) return null;
+                            const libelle = evt.type === 'delestage' ? 'Délestage' : evt.type === 'o2' ? "Ajout d'O2 (micro-oxygénation)" : `Ajout de ${evt.produitNom}`;
+                            return (
+                              <div className="ref-list-row" key={evtId}>
+                                <span>{libelle}</span>
+                                <span className="quick-row">
+                                  <button className="btn btn-primary btn-sm" onClick={() => confirmerRecommandation(lot.id, evtId)}>Créer la tâche</button>
+                                  <button className="btn btn-ghost btn-sm" onClick={() => ignorerRecommandation(lot.id, evtId)}>Ignorer</button>
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 <div className="tabs">
                   {[['suivi', 'Suivi'], ['controle', `T° & densité (${controles.length})`],

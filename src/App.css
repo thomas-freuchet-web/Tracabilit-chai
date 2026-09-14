@@ -407,6 +407,8 @@ h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -.01em; }
   background: var(--stone-50); border-left: 3px solid var(--straw-400); border-radius: var(--r-sm);
   padding: 11px 13px; font-size: 12.5px; color: var(--cellar-700); margin-bottom: 16px; line-height: 1.55;
 }
+.info-banner.warn { border-left-color: var(--danger-600); background: var(--bordeaux-100); }
+.info-banner .ref-list-row:not(:last-child) { margin-bottom: 6px; }
 .delai-hint {
   display: inline-block; font-family: var(--font-mono); font-size: 11px;
   color: var(--bordeaux-600); background: var(--bordeaux-100);

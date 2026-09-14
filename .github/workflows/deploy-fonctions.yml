@@ -27,6 +27,15 @@ jobs:
       - run: supabase functions deploy extraire-bulletin-multi --project-ref jkqktroprtnnivbfgyph
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      - run: supabase functions deploy extraire-programmation --project-ref jkqktroprtnnivbfgyph
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      - run: supabase functions deploy envoyer-alerte-email --project-ref jkqktroprtnnivbfgyph
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       - run: supabase secrets set GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}" --project-ref jkqktroprtnnivbfgyph
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      - run: supabase secrets set RESEND_API_KEY="${{ secrets.RESEND_API_KEY }}" REPORT_EMAIL_TO="${{ secrets.REPORT_EMAIL_TO }}" --project-ref jkqktroprtnnivbfgyph
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}

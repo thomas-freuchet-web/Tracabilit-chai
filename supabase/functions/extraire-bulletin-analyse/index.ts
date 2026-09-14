@@ -44,14 +44,17 @@ Réponds UNIQUEMENT avec un objet JSON strictement de cette forme, sans texte au
   "date": "date de l'analyse au format YYYY-MM-DD, vide si absente",
   "valeurs": ${CRITERES_CONNUS},
   "autres": [{ "label": "nom du critère tel qu'écrit sur le bulletin", "valeur": "valeur avec son unité, en texte" }],
-  "notes": "string, vide si absent"
+  "notes": "string, vide si absent",
+  "recommandationsProduits": [{ "produitNom": "nom du produit recommandé", "dose": nombre ou omis si non précisé, "uniteDose": "g_hl" ou "g_l" ou "kg_hl" ou "mg_l" ou "ml_hl" ou "ml_l" ou "cl_hl" ou "cl_l" ou "l_hl" (omis si pas de dose), "densiteDeclenchement": nombre ou omis (la densité à laquelle l'ajouter, si le bulletin l'indique), "raison": "phrase courte expliquant pourquoi (ex. carence en azote assimilable)" }]
 }
 
 Pour "valeurs" et "autres" : donne toujours la valeur en TEXTE (jamais un nombre JSON brut), pour pouvoir garder telle quelle une mention comme "< 5", "> 200", "traces" ou "non détecté" quand c'est ce que le bulletin indique — ne remplace jamais ce genre de mention par null ou par une valeur inventée. N'invente aucune valeur non présente sur le bulletin — mets null (pour "valeurs") ou omets l'entrée (pour "autres") si un paramètre est absent ou illisible. Convertis les unités si besoin (ex. l'acidité est parfois donnée en g/L d'acide tartrique : convertis en équivalent H2SO4 si l'unité d'origine est précisée, sinon laisse la valeur telle quelle sans convertir si tu n'es pas sûr).
 
 Pour "autres" : liste ICI tout critère analysé qui n'apparaît PAS dans la liste "valeurs" ci-dessus — par exemple (liste non limitative) acidité lactique, azote assimilable (IAN/YAN), turbidité (NTU), indice de polyphénols totaux (IPT), anthocyanes, tanins, potassium, fer, cuivre, gaz carbonique dissous, glucose/fructose séparés, acide citrique, acide ascorbique, résultat de test de stabilité (protéique, tartrique), ou tout autre paramètre présent sur ce bulletin précis. Utilise l'intitulé exact du bulletin comme "label" (garde son unité dans "valeur", ex. "180 mg N/L"). N'en invente aucun : seulement ce qui est effectivement écrit sur le document.
 
-Pour "notes" : reprends fidèlement les remarques, annotations, appréciations ou commentaires écrits par le laboratoire concernant CETTE cuve précise (souvent en bas du bulletin ou à côté de son bloc de résultats, parfois manuscrits) — par exemple un avis sur la stabilité du vin, un risque de déviation, une recommandation de traitement. Ignore les mentions purement administratives (numéro de bulletin, date d'édition, coordonnées du labo, mode opératoire des analyses) et les remarques qui concernent explicitement une autre cuve. Laisse "" si cette cuve n'a aucune remarque de ce type.`;
+Pour "notes" : reprends fidèlement les remarques, annotations, appréciations ou commentaires écrits par le laboratoire concernant CETTE cuve précise (souvent en bas du bulletin ou à côté de son bloc de résultats, parfois manuscrits) — par exemple un avis sur la stabilité du vin, un risque de déviation, une recommandation de traitement. Ignore les mentions purement administratives (numéro de bulletin, date d'édition, coordonnées du labo, mode opératoire des analyses) et les remarques qui concernent explicitement une autre cuve. Laisse "" si cette cuve n'a aucune remarque de ce type.
+
+Pour "recommandationsProduits" : si (et SEULEMENT si) le bulletin recommande explicitement d'ajouter un ou plusieurs produits œnologiques à ce vin (ex. "prévoir un apport d'azote assimilable", "correction recommandée : 2 g/hL d'acide tartrique"), liste-les ici, un par produit. N'invente ni produit ni dose non écrits sur le bulletin — un tableau vide [] si le bulletin ne recommande rien.`;
 }
 
 function reponseJson(corps: unknown, status = 200) {
