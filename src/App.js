@@ -586,7 +586,8 @@ function LigneOrdreTravail({ ordre, lot, produits, contenants, onValider, onModi
   } else if (ordre.type === 'travail' && d.action) {
     detail = d.action;
     if (d.action === ACTION_O2 && d.dureeRef && d.volumeRef) {
-      detail += ` (${d.dureeRef} min / ${d.volumeRef} hL${d.pression ? ` à ${d.pression} bar` : ''})`;
+      const dureeO2 = calculerDureeO2(d.dureeRef, d.volumeRef, lot ? volumeLot(lot) : 0);
+      detail += ` (${dureeO2 !== null ? `${dureeO2} min` : `${d.dureeRef} min / ${d.volumeRef} hL`}${d.pression ? ` à ${d.pression} bar` : ''})`;
     }
     if (d.action === ACTION_REMONTAGE && d.debitPompe) {
       const dureeRemontage = calculerDureeRemontage(d.volumeRemontage, d.debitPompe, d.nbPassages || '1');
