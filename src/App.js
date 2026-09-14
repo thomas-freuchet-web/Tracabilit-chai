@@ -561,6 +561,9 @@ function LigneOrdreTravail({ ordre, lot, produits, contenants, onValider, onModi
     detail = `→ ${contenants[d.contenantDestId].nom}${d.volume ? ` · ${d.volume} hL` : ''}`;
   } else if (ordre.type === 'travail' && d.action) {
     detail = d.action;
+    if (d.action === ACTION_O2 && d.dureeRef && d.volumeRef) {
+      detail += ` (${d.dureeRef} min / ${d.volumeRef} hL${d.pression ? ` à ${d.pression} bar` : ''})`;
+    }
   } else if (ordre.type === 'perte' && d.motif) {
     detail = d.motif;
   } else if (ordre.type === 'controle' && d.moment) {
@@ -1851,11 +1854,13 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
     })(),
     contenantDestId: ordre.details.contenantDestId || '', volume: ordre.details.volume || '',
     action: ordre.details.action || '', motif: ordre.details.motif || '', moment: ordre.details.moment || '',
+    pression: ordre.details.pression || '', dureeRef: ordre.details.dureeRef || '', volumeRef: ordre.details.volumeRef || '',
     notes: ordre.notes || '',
   } : {
     date: dateInitiale || today(), type: 'libre', titre: '', lotId: '',
     lignes: [ligneVideOrdre()],
-    contenantDestId: '', volume: '', action: '', motif: '', moment: '', notes: '',
+    contenantDestId: '', volume: '', action: '', motif: '', moment: '',
+    pression: '', dureeRef: '', volumeRef: '', notes: '',
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const lotSelectionne = lots.find((l) => l.id === f.lotId);
@@ -1886,6 +1891,7 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
       lignes: f.lignes.filter((l) => l.produitId).map((l) => ({ produitId: l.produitId, quantite: l.quantite, numeroLotFournisseur: l.numeroLotFournisseur })),
       contenantDestId: f.contenantDestId, volume: f.volume, action: f.action, motif: f.motif,
       moment: f.moment,
+      ...(f.action === ACTION_O2 ? { pression: f.pression, dureeRef: f.dureeRef, volumeRef: f.volumeRef } : {}),
     };
     if (onValider({ ...f, details })) onFermer();
   };
@@ -1991,12 +1997,35 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
       )}
 
       {f.type === 'travail' && (
-        <Field label="Action" hint="Optionnel">
-          <select value={f.action} onChange={(e) => set('action', e.target.value)}>
-            <option value="">— Sélectionner —</option>
-            {TRAVAUX.map((t) => <option key={t} value={t}>{t}</option>)}
-          </select>
-        </Field>
+        <>
+          <Field label="Action" hint="Optionnel">
+            <select value={f.action} onChange={(e) => set('action', e.target.value)}>
+              <option value="">— Sélectionner —</option>
+              {TRAVAUX.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </Field>
+          {f.action === ACTION_O2 && (
+            <>
+              <div className="field-grid">
+                <Field label="Pression (bar)">
+                  <input type="number" step="0.1" value={f.pression} onChange={(e) => set('pression', e.target.value)} />
+                </Field>
+                <Field label="Durée de référence (min)" hint="Étalonnage du diffuseur">
+                  <input type="number" step="0.1" value={f.dureeRef} onChange={(e) => set('dureeRef', e.target.value)} />
+                </Field>
+                <Field label="Pour un volume de référence (hL)">
+                  <input type="number" step="0.1" value={f.volumeRef} onChange={(e) => set('volumeRef', e.target.value)} />
+                </Field>
+              </div>
+              {lotSelectionne && calculerDureeO2(f.dureeRef, f.volumeRef, volumeLot(lotSelectionne)) !== null && (
+                <p className="inline-note">
+                  Durée totale estimée : <strong>{calculerDureeO2(f.dureeRef, f.volumeRef, volumeLot(lotSelectionne))} min</strong>
+                  {' '}pour les {volumeLot(lotSelectionne)} hL de {lotSelectionne.code}.
+                </p>
+              )}
+            </>
+          )}
+        </>
       )}
 
       {f.type === 'perte' && (
@@ -3192,7 +3221,13 @@ export default function CahierDeChai() {
       ouvrir('ajoutProduit', { ...commun, initial: lignesInitiales.length ? lignesInitiales : undefined });
     }
     else if (ordre.type === 'transfert') ouvrir('transfert', { ...commun, initial: { contenantDestId: d.contenantDestId || '', volume: d.volume || '' } });
-    else if (ordre.type === 'travail') ouvrir('travail', { ...commun, initial: { action: d.action || '' } });
+    else if (ordre.type === 'travail') ouvrir('travail', {
+      ...commun,
+      initial: {
+        action: d.action || '',
+        ...(d.action === ACTION_O2 ? { pression: d.pression || '', dureeRef: d.dureeRef || '', volumeRef: d.volumeRef || '' } : {}),
+      },
+    });
     else if (ordre.type === 'perte') ouvrir('perte', { ...commun, initial: { motif: d.motif || '' } });
     else if (ordre.type === 'analyse') ouvrir('analyse', commun);
     else if (ordre.type === 'controle') ouvrir('controle', d.moment ? { ...commun, initial: { moment: d.moment } } : commun);
