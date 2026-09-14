@@ -45,8 +45,19 @@ const PARAMS_ANALYSE = [
 const TRAVAUX = [
   'Remontage', 'Délestage', 'Pigeage', 'Écoulage', 'Pressurage', 'Soutirage',
   'Bâtonnage', 'Ouillage', 'Débourbage', 'Sulfitage', 'Filtration',
-  'Contrôle température', 'Dégustation',
+  "Ajout d'O2 (micro-oxygénation)", 'Contrôle température', 'Dégustation',
 ];
+const ACTION_O2 = "Ajout d'O2 (micro-oxygénation)";
+
+// Micro-oxygénation : le débit du diffuseur est étalonné à une pression
+// donnée pour un volume de référence (ex. "4 min pour 30 hL à 3 bar"), à
+// ramener linéairement au volume réel de la cuve traitée.
+function calculerDureeO2(dureeRef, volumeRef, volumeCuveHl) {
+  const dRef = Number(dureeRef);
+  const vRef = Number(volumeRef);
+  if (!dRef || !vRef || vRef <= 0 || !volumeCuveHl || volumeCuveHl <= 0) return null;
+  return round2((dRef / vRef) * volumeCuveHl);
+}
 
 // Ordre de travail : liste de tâches planifiées pour la journée. Les types
 // autres que "libre" sont reliés à une vraie opération de traçabilité —
@@ -1707,12 +1718,17 @@ function ModaleTravail({ lot, contenants, onValider, onFermer, travail, initial 
   const [f, setF] = useState(travail ? {
     lotId: lot.id, date: travail.date, heure: travail.heure || nowTime(), action: travail.action,
     contenantId: travail.contenantId, duree: travail.duree || '', notes: travail.notes || '',
+    pression: travail.pression || '', dureeRef: travail.dureeRef || '', volumeRef: travail.volumeRef || '',
   } : {
     lotId: lot.id, date: today(), heure: nowTime(), action: '',
     contenantId: (lot.contenants[0] || {}).contenantId || '', duree: '', notes: '',
+    pression: '', dureeRef: '', volumeRef: '',
     ...(initial || {}),
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const estO2 = f.action === ACTION_O2;
+  const volumeContenant = (lot.contenants.find((c) => c.contenantId === f.contenantId) || {}).volume || 0;
+  const dureeCalculee = estO2 ? calculerDureeO2(f.dureeRef, f.volumeRef, volumeContenant) : null;
   return (
     <Modal title={travail ? 'Modifier le travail de cave' : 'Travail de cave'} subtitle={`Lot ${lot.code}`} onClose={onFermer}>
       <div className="field-grid">
@@ -1735,11 +1751,36 @@ function ModaleTravail({ lot, contenants, onValider, onFermer, travail, initial 
             ))}
           </select>
         </Field>
-        <Field label="Durée / intensité" hint="Optionnel"><input type="text" value={f.duree} onChange={(e) => set('duree', e.target.value)} /></Field>
+        {!estO2 && (
+          <Field label="Durée / intensité" hint="Optionnel"><input type="text" value={f.duree} onChange={(e) => set('duree', e.target.value)} /></Field>
+        )}
       </div>
+      {estO2 && (
+        <>
+          <div className="field-grid">
+            <Field label="Pression (bar)">
+              <input type="number" step="0.1" value={f.pression} onChange={(e) => set('pression', e.target.value)} />
+            </Field>
+            <Field label="Durée de référence (min)" hint="Étalonnage du diffuseur">
+              <input type="number" step="0.1" value={f.dureeRef} onChange={(e) => set('dureeRef', e.target.value)} />
+            </Field>
+            <Field label="Pour un volume de référence (hL)">
+              <input type="number" step="0.1" value={f.volumeRef} onChange={(e) => set('volumeRef', e.target.value)} />
+            </Field>
+          </div>
+          {dureeCalculee !== null ? (
+            <p className="inline-note">
+              Durée totale à appliquer : <strong>{dureeCalculee} min</strong> pour les {volumeContenant} hL de cette cuve
+              {f.pression ? ` (à ${f.pression} bar)` : ''}.
+            </p>
+          ) : (
+            <p className="muted small">Renseigne la durée et le volume de référence pour calculer la durée totale.</p>
+          )}
+        </>
+      )}
       <Field label="Notes"><textarea value={f.notes} onChange={(e) => set('notes', e.target.value)} /></Field>
       <div className="form-actions">
-        <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>Enregistrer</button>
+        <button className="btn btn-primary" onClick={() => { if (onValider(estO2 && dureeCalculee !== null ? { ...f, duree: `${dureeCalculee} min` } : f)) onFermer(); }}>Enregistrer</button>
         <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
       </div>
     </Modal>
@@ -3802,6 +3843,11 @@ export default function CahierDeChai() {
     ajouterOperation(form.lotId, {
       type: 'travail', date: form.date, heure: form.heure, action: form.action,
       contenantId: form.contenantId, duree: form.duree || '', notes: form.notes || '', auteur: user.id,
+      // Micro-oxygénation : trace l'étalonnage utilisé pour retrouver le
+      // calcul (pression, durée/volume de référence) à côté de la durée finale.
+      ...(form.action === ACTION_O2
+        ? { pression: form.pression || '', dureeRef: form.dureeRef || '', volumeRef: form.volumeRef || '' }
+        : {}),
     });
     return true;
   };
@@ -3813,7 +3859,12 @@ export default function CahierDeChai() {
       [lotId]: {
         ...prev[lotId],
         operations: prev[lotId].operations.map((o) => (o.id === opId
-          ? { ...o, date: form.date, heure: form.heure, action: form.action, contenantId: form.contenantId, duree: form.duree || '', notes: form.notes || '' }
+          ? {
+            ...o, date: form.date, heure: form.heure, action: form.action, contenantId: form.contenantId, duree: form.duree || '', notes: form.notes || '',
+            ...(form.action === ACTION_O2
+              ? { pression: form.pression || '', dureeRef: form.dureeRef || '', volumeRef: form.volumeRef || '' }
+              : { pression: undefined, dureeRef: undefined, volumeRef: undefined }),
+          }
           : o)),
       },
     }));

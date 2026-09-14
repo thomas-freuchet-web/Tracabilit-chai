@@ -269,7 +269,7 @@ export function genererPdfCuve(lot, contenants, parcelles, cepages, options = {}
           o.date,
           o.heure || '—',
           o.action || '—',
-          o.duree || '—',
+          `${o.duree || '—'}${o.pression ? ` (${o.pression} bar)` : ''}`,
           o.notes || '—',
         ]),
         [0.9, 0.7, 1.2, 1.1, 1.6]
