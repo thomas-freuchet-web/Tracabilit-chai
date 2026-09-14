@@ -6,7 +6,7 @@ import { chargerEtat, sauvegarderEtat } from './lib/cloudStore';
 import { fusionnerEtats } from './lib/fusionEtat';
 import { genererPdfCuve, telechargerBlob } from './lib/pdfRecap';
 import { genererPdfRegistre } from './lib/pdfRegistre';
-import { uploaderBulletin, ouvrirBulletinStorage, supprimerBulletinStorage } from './lib/storageBulletins';
+import { uploaderBulletin, ouvrirBulletinStorage, supprimerBulletinStorage, telechargerBulletinBase64 } from './lib/storageBulletins';
 import { temperatureCible, coefficientRemontage, evenementsADeclencher, ecartTemperature } from './lib/programmation';
 import './App.css';
 
@@ -1443,55 +1443,63 @@ function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer, analyse, 
   const setAutre = (i, champ, v) => setF((p) => ({ ...p, autres: p.autres.map((a, idx) => (idx === i ? { ...a, [champ]: v } : a)) }));
   const retirerAutre = (i) => setF((p) => ({ ...p, autres: p.autres.filter((_, idx) => idx !== i) }));
 
+  // Cœur partagé de la lecture IA — appelle l'edge function et applique le
+  // résultat au formulaire. Utilisé à la fois pour un nouveau fichier
+  // (lireAvecIA) et pour relire un bulletin déjà archivé (relireAvecIA),
+  // sans dupliquer le traitement d'erreur ni le remplissage des champs.
+  const analyserBulletinIA = async (base64, mimeType) => {
+    const nomCuve = contenants[f.contenantId] ? contenants[f.contenantId].nom : '';
+    const { data, error } = await supabase.functions.invoke('extraire-bulletin-analyse', {
+      body: { fichierBase64: base64, mimeType, contenantNom: nomCuve, lotCode: lot.code },
+    });
+    if (error) {
+      let detail = error.message;
+      let statut = null;
+      if (error.context) {
+        statut = error.context.status;
+        if (typeof error.context.json === 'function') {
+          try {
+            const corps = await error.context.json();
+            if (corps && (corps.error || corps.message)) detail = corps.error || corps.message;
+          } catch { /* corps non-JSON, on garde le message générique */ }
+        }
+      }
+      // eslint-disable-next-line no-console
+      console.error('Erreur lecture IA du bulletin :', { statut, detail, error });
+      throw new Error(statut ? `${detail} (HTTP ${statut})` : detail);
+    }
+    if (data && data.error) throw new Error(data.error);
+
+    setF((p) => {
+      const nouvellesValeurs = { ...p.valeurs };
+      Object.entries(data.valeurs || {}).forEach(([k, v]) => {
+        if (v !== null && v !== undefined && v !== '') nouvellesValeurs[k] = String(v);
+      });
+      const nouveauxAutres = [...p.autres];
+      (data.autres || []).forEach((a) => {
+        if (!a || !a.label || !a.valeur) return;
+        if (nouveauxAutres.some((x) => x.label.toLowerCase() === String(a.label).toLowerCase())) return;
+        nouveauxAutres.push({ label: String(a.label), valeur: String(a.valeur) });
+      });
+      const noteIA = (data.notes || '').trim();
+      const notes = !noteIA ? p.notes
+        : !p.notes ? noteIA
+        : p.notes.includes(noteIA) ? p.notes
+        : `${p.notes}\n${noteIA}`;
+      return { ...p, valeurs: nouvellesValeurs, autres: nouveauxAutres, source: 'labo', date: data.date || p.date, notes };
+    });
+
+    if ((data.recommandationsProduits || []).length > 0) {
+      setRecommandationsIA(data.recommandationsProduits.map((r) => ({ ...r, retenue: true })));
+    }
+  };
+
   const lireAvecIA = async () => {
     if (!fichierIA) { alert('Choisis un bulletin (PDF ou photo)'); return; }
     setChargementIA(true); setErreurIA('');
     try {
-      const nomCuve = contenants[f.contenantId] ? contenants[f.contenantId].nom : '';
       const base64 = await fichierEnBase64(fichierIA);
-      const { data, error } = await supabase.functions.invoke('extraire-bulletin-analyse', {
-        body: { fichierBase64: base64, mimeType: fichierIA.type, contenantNom: nomCuve, lotCode: lot.code },
-      });
-      if (error) {
-        let detail = error.message;
-        let statut = null;
-        if (error.context) {
-          statut = error.context.status;
-          if (typeof error.context.json === 'function') {
-            try {
-              const corps = await error.context.json();
-              if (corps && (corps.error || corps.message)) detail = corps.error || corps.message;
-            } catch { /* corps non-JSON, on garde le message générique */ }
-          }
-        }
-        // eslint-disable-next-line no-console
-        console.error('Erreur lecture IA du bulletin :', { statut, detail, error });
-        throw new Error(statut ? `${detail} (HTTP ${statut})` : detail);
-      }
-      if (data && data.error) throw new Error(data.error);
-
-      setF((p) => {
-        const nouvellesValeurs = { ...p.valeurs };
-        Object.entries(data.valeurs || {}).forEach(([k, v]) => {
-          if (v !== null && v !== undefined && v !== '') nouvellesValeurs[k] = String(v);
-        });
-        const nouveauxAutres = [...p.autres];
-        (data.autres || []).forEach((a) => {
-          if (!a || !a.label || !a.valeur) return;
-          if (nouveauxAutres.some((x) => x.label.toLowerCase() === String(a.label).toLowerCase())) return;
-          nouveauxAutres.push({ label: String(a.label), valeur: String(a.valeur) });
-        });
-        const noteIA = (data.notes || '').trim();
-        const notes = !noteIA ? p.notes
-          : !p.notes ? noteIA
-          : p.notes.includes(noteIA) ? p.notes
-          : `${p.notes}\n${noteIA}`;
-        return { ...p, valeurs: nouvellesValeurs, autres: nouveauxAutres, source: 'labo', date: data.date || p.date, notes };
-      });
-
-      if ((data.recommandationsProduits || []).length > 0) {
-        setRecommandationsIA(data.recommandationsProduits.map((r) => ({ ...r, retenue: true })));
-      }
+      await analyserBulletinIA(base64, fichierIA.type);
 
       // Joint aussi le fichier comme bulletin archivé, pour éviter de le réimporter.
       try {
@@ -1504,6 +1512,29 @@ function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer, analyse, 
       setErreurIA("Impossible d'analyser le bulletin : " + (e && e.message ? e.message : 'erreur inconnue'));
     }
     setChargementIA(false);
+  };
+
+  // Relit un bulletin déjà archivé (déjà attaché à cette analyse) — utile
+  // pour des analyses importées avant que la détection de recommandations de
+  // produits n'existe, sans avoir à retrouver le fichier d'origine.
+  const [relectureEnCours, setRelectureEnCours] = useState(null); // id du bulletin en cours de relecture
+  const relireAvecIA = async (bulletin) => {
+    setRelectureEnCours(bulletin.id); setErreurIA('');
+    try {
+      let base64, mimeType;
+      if (bulletin.path) {
+        ({ base64, mimeType } = await telechargerBulletinBase64(bulletin.path, bulletin.type));
+      } else {
+        const fichier = await lireFichier(bulletin.id);
+        if (!fichier) throw new Error('Ce bulletin est introuvable — importé depuis un autre appareil avant la synchronisation, ou supprimé.');
+        base64 = await fichierEnBase64(fichier.blob);
+        mimeType = fichier.blob.type || bulletin.type;
+      }
+      await analyserBulletinIA(base64, mimeType);
+    } catch (e) {
+      setErreurIA("Impossible de relire le bulletin : " + (e && e.message ? e.message : 'erreur inconnue'));
+    }
+    setRelectureEnCours(null);
   };
 
   const importer = async (e) => {
@@ -1622,6 +1653,9 @@ function ModaleAnalyse({ lot, contenants, userId, onValider, onFermer, analyse, 
           {f.bulletins.map((b) => (
             <span className="chip" key={b.id}>
               📄 {b.nom} <span className="muted">({formaterTaille(b.taille)})</span>
+              <button onClick={() => relireAvecIA(b)} disabled={relectureEnCours === b.id} title="Relire ce bulletin avec l'IA">
+                {relectureEnCours === b.id ? '…' : '🤖'}
+              </button>
               <button onClick={() => retirer(b)}>✕</button>
             </span>
           ))}

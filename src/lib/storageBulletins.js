@@ -23,6 +23,24 @@ export async function ouvrirBulletinStorage(path) {
   if (!w) alert('Le navigateur a bloqué l\'ouverture du bulletin (pop-up). Autorise les pop-ups pour ce site.');
 }
 
+// Récupère le contenu d'un bulletin déjà archivé (en base64) pour pouvoir le
+// relire avec l'IA sans que l'utilisateur ait à retrouver le fichier
+// d'origine sur son appareil.
+export async function telechargerBulletinBase64(path, mimeTypeConnu) {
+  const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(path, 120);
+  if (error) throw error;
+  const res = await fetch(data.signedUrl);
+  if (!res.ok) throw new Error('Impossible de télécharger le bulletin archivé');
+  const blob = await res.blob();
+  const base64 = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+  return { base64, mimeType: blob.type || mimeTypeConnu };
+}
+
 export async function supprimerBulletinStorage(path) {
   const { error } = await supabase.storage.from(BUCKET).remove([path]);
   if (error) throw error;
