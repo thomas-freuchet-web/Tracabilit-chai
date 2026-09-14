@@ -589,7 +589,8 @@ function LigneOrdreTravail({ ordre, lot, produits, contenants, onValider, onModi
       detail += ` (${d.dureeRef} min / ${d.volumeRef} hL${d.pression ? ` à ${d.pression} bar` : ''})`;
     }
     if (d.action === ACTION_REMONTAGE && d.debitPompe) {
-      detail += ` (${d.debitPompe} hL/h${Number(d.nbPassages) > 1 ? ` · ${d.nbPassages} passages` : ''}${d.volumeRemontage ? ` · ${d.volumeRemontage} hL` : ''})`;
+      const dureeRemontage = calculerDureeRemontage(d.volumeRemontage, d.debitPompe, d.nbPassages || '1');
+      detail += ` (${d.debitPompe} hL/h${dureeRemontage !== null ? ` · ${dureeRemontage} min` : ''}${Number(d.nbPassages) > 1 ? ` · ${d.nbPassages} passages` : ''}${d.volumeRemontage ? ` · ${d.volumeRemontage} hL` : ''})`;
     }
   } else if (ordre.type === 'perte' && d.motif) {
     detail = d.motif;
@@ -1977,11 +1978,36 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
   };
 
   const valider = () => {
-    const details = {
+    const detailsCommuns = {
       lignes: f.lignes.filter((l) => l.produitId).map((l) => ({ produitId: l.produitId, quantite: l.quantite, numeroLotFournisseur: l.numeroLotFournisseur })),
       contenantDestId: f.contenantDestId, volume: f.volume, action: f.action, motif: f.motif,
       moment: f.moment,
       ...(f.action === ACTION_O2 ? { pression: f.pression, dureeRef: f.dureeRef, volumeRef: f.volumeRef } : {}),
+    };
+
+    // Un remontage splitté en 2 ou 3 fois devient plusieurs tâches distinctes
+    // (une par passage), chacune avec sa propre durée déjà visible sur la
+    // ligne de la tâche — plutôt qu'une seule tâche qui ne montrait le temps
+    // qu'une fois rouverte, et sans dire combien de fois relancer la pompe.
+    if (!ordre && f.type === 'travail' && f.action === ACTION_REMONTAGE && Number(f.nbPassages) > 1) {
+      const volumeCuve = lotSelectionne ? volumeLot(lotSelectionne) : 0;
+      const volumeTotal = f.volumeRemontage !== '' ? Number(f.volumeRemontage) : volumeCuve;
+      const n = Number(f.nbPassages);
+      const volumePassage = round2(volumeTotal / n);
+      let ok = true;
+      for (let i = 1; i <= n && ok; i++) {
+        ok = onValider({
+          ...f,
+          titre: `${f.titre.trim()} (${i}/${n})`,
+          details: { ...detailsCommuns, volumeRemontage: String(volumePassage), debitPompe: f.debitPompe, nbPassages: '1', coefficientVolume: '' },
+        });
+      }
+      if (ok) onFermer();
+      return;
+    }
+
+    const details = {
+      ...detailsCommuns,
       ...(f.action === ACTION_REMONTAGE
         ? { coefficientVolume: f.coefficientVolume, volumeRemontage: f.volumeRemontage, debitPompe: f.debitPompe, nbPassages: f.nbPassages }
         : {}),
@@ -2163,7 +2189,8 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
                   <p className="inline-note">
                     Durée {f.nbPassages > 1 ? 'par passage' : 'estimée'} : <strong>{dureeEstimee} min</strong>
                     {' '}({round2(volumeEffectif / Number(f.nbPassages))} hL à {f.debitPompe} hL/h)
-                    {f.nbPassages > 1 ? ` — ${f.nbPassages} passages pour ${volumeEffectif} hL au total` : ''}.
+                    {f.nbPassages > 1 && !ordre ? ` — ${f.nbPassages} tâches seront créées, une par passage, avec ce temps de pompe` : ''}
+                    {f.nbPassages > 1 && ordre ? ` — ${f.nbPassages} passages pour ${volumeEffectif} hL au total` : ''}.
                   </p>
                 )}
               </>
@@ -2195,7 +2222,11 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
       <Field label="Notes" hint="Optionnel"><textarea value={f.notes} onChange={(e) => set('notes', e.target.value)} /></Field>
 
       <div className="form-actions">
-        <button className="btn btn-primary" onClick={valider}>{ordre ? 'Enregistrer' : 'Ajouter la tâche'}</button>
+        <button className="btn btn-primary" onClick={valider}>
+          {ordre ? 'Enregistrer' : (f.type === 'travail' && f.action === ACTION_REMONTAGE && Number(f.nbPassages) > 1
+            ? `Ajouter les ${f.nbPassages} tâches`
+            : 'Ajouter la tâche')}
+        </button>
         <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
       </div>
     </Modal>
