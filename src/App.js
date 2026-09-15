@@ -64,6 +64,9 @@ const ACTION_REMONTAGE = 'Remontage';
 // Combien de fois le volume de la cuve doit passer par le remontage (ex. 1,5
 // fois le volume pour bien homogénéiser un chapeau épais).
 const COEFFICIENTS_REMONTAGE = [
+  { valeur: 0.25, label: '0,25 fois le volume (un quart)' },
+  { valeur: 0.5, label: '0,5 fois le volume (une demie)' },
+  { valeur: 0.75, label: '0,75 fois le volume' },
   { valeur: 1, label: '1 fois le volume' },
   { valeur: 1.5, label: '1,5 fois le volume (une fois et demie)' },
   { valeur: 1.75, label: '1,75 fois le volume' },
