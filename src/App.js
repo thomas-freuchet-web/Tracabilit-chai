@@ -5139,6 +5139,19 @@ export default function CahierDeChai() {
     }
   };
 
+  // Remontage recommandé par le protocole pour le coefficient courant — pas
+  // de débit de pompe connu à l'avance (ça dépend de la pompe dispo ce
+  // jour-là), donc la tâche pré-remplit juste le volume à remonter ; le
+  // reste (vitesse, passages) se choisit en ouvrant la tâche.
+  const creerTacheRemontage = (lotId, coefficient) => {
+    const lot = lots[lotId];
+    const volumeRemontage = round2(coefficient * volumeLot(lot));
+    ajouterOrdreTravail({
+      date: today(), type: 'travail', titre: `Programmation — ${lot.code} : Remontage`, lotId,
+      details: { action: ACTION_REMONTAGE, coefficientVolume: String(coefficient), volumeRemontage: String(volumeRemontage), debitPompe: '', nbPassages: '1' },
+    });
+  };
+
   // Alerte email — best effort : l'alerte in-app (alertesTemperature) reste
   // affichée même si l'envoi échoue (pas de secret configuré, hors ligne...).
   const envoyerAlerteEmailTemperature = async (lot, point, cible) => {
@@ -5178,21 +5191,43 @@ export default function CahierDeChai() {
       }
     }
 
+    // Un seul objet "programmation" consolidé, mis à jour une seule fois à
+    // la fin — deux appels séparés à majLot ici écraseraient l'un l'autre
+    // (chacun repartirait du même lot.programmation figé au début de cette
+    // fonction), perdant soit le suivi du remontage, soit celui des
+    // événements.
+    let nouveauProgrammation = null;
+
+    // Remontage : au plus une recommandation/tâche par jour et par cuve —
+    // le protocole ne dit pas combien de fois par jour le refaire, contrairement
+    // aux événements ponctuels qui, eux, ne se déclenchent qu'une fois.
+    if (prog) {
+      const coefficient = coefficientRemontage(prog, point.densite);
+      if (coefficient !== null && lot.programmation.remontageCreeLe !== point.date) {
+        nouveauProgrammation = { ...lot.programmation, remontageCreeLe: point.date };
+        if (lot.programmation.mode === 'auto') {
+          creerTacheRemontage(lotId, coefficient);
+        } else {
+          nouveauProgrammation.recommandationsEnAttente = [...(nouveauProgrammation.recommandationsEnAttente || []), `remontage:${point.date}`];
+        }
+      }
+    }
+
     const evenements = [...(prog ? prog.evenements || [] : []), ...(lot.programmation.evenementsSupplementaires || [])];
     const aDeclencher = evenementsADeclencher(evenements, lot.programmation.evenementsDeclenches, point.densite, lot.programmation.densiteActivation);
-    if (!aDeclencher.length) return;
-
-    if (lot.programmation.mode === 'auto') aDeclencher.forEach((e) => creerTacheDepuisEvenement(lotId, e));
-
-    majLot(lotId, {
-      programmation: {
-        ...lot.programmation,
+    if (aDeclencher.length) {
+      if (lot.programmation.mode === 'auto') aDeclencher.forEach((e) => creerTacheDepuisEvenement(lotId, e));
+      const base = nouveauProgrammation || lot.programmation;
+      nouveauProgrammation = {
+        ...base,
         evenementsDeclenches: [...(lot.programmation.evenementsDeclenches || []), ...aDeclencher.map((e) => e.id)],
         recommandationsEnAttente: lot.programmation.mode === 'auto'
-          ? (lot.programmation.recommandationsEnAttente || [])
-          : [...(lot.programmation.recommandationsEnAttente || []), ...aDeclencher.map((e) => e.id)],
-      },
-    });
+          ? (base.recommandationsEnAttente || [])
+          : [...(base.recommandationsEnAttente || []), ...aDeclencher.map((e) => e.id)],
+      };
+    }
+
+    if (nouveauProgrammation) majLot(lotId, { programmation: nouveauProgrammation });
   };
 
   // Depuis le panneau "Suivi de la programmation" : crée la tâche pour une
@@ -5200,8 +5235,14 @@ export default function CahierDeChai() {
   const confirmerRecommandation = (lotId, evenementId) => {
     const lot = lots[lotId];
     const prog = lot.programmation.programmationId ? programmations[lot.programmation.programmationId] : null;
-    const evenement = [...(prog ? prog.evenements || [] : []), ...(lot.programmation.evenementsSupplementaires || [])].find((e) => e.id === evenementId);
-    if (evenement) creerTacheDepuisEvenement(lotId, evenement);
+    if (evenementId.startsWith('remontage:')) {
+      const point = dernierPointDensite(lot);
+      const coefficient = prog && point ? coefficientRemontage(prog, point.densite) : null;
+      if (coefficient !== null) creerTacheRemontage(lotId, coefficient);
+    } else {
+      const evenement = [...(prog ? prog.evenements || [] : []), ...(lot.programmation.evenementsSupplementaires || [])].find((e) => e.id === evenementId);
+      if (evenement) creerTacheDepuisEvenement(lotId, evenement);
+    }
     majLot(lotId, { programmation: { ...lot.programmation, recommandationsEnAttente: lot.programmation.recommandationsEnAttente.filter((id) => id !== evenementId) } });
   };
   const ignorerRecommandation = (lotId, evenementId) => {
@@ -6512,9 +6553,15 @@ export default function CahierDeChai() {
                         <div className="stat-card" style={{ marginTop: 8 }}>
                           <p className="muted small" style={{ marginTop: 0 }}>Recommandations en attente (mode cliquable) :</p>
                           {recommandations.map((evtId) => {
-                            const evt = tousEvenements.find((e) => e.id === evtId);
-                            if (!evt) return null;
-                            const libelle = evt.type === 'delestage' ? 'Délestage' : evt.type === 'o2' ? "Ajout d'O2 (micro-oxygénation)" : `Ajout de ${evt.produitNom}`;
+                            let libelle;
+                            if (evtId.startsWith('remontage:')) {
+                              const coefficient = progActive && point ? coefficientRemontage(progActive, point.densite) : null;
+                              libelle = `Remontage${coefficient !== null ? ` — ${coefficient} fois le volume` : ''}`;
+                            } else {
+                              const evt = tousEvenements.find((e) => e.id === evtId);
+                              if (!evt) return null;
+                              libelle = evt.type === 'delestage' ? 'Délestage' : evt.type === 'o2' ? "Ajout d'O2 (micro-oxygénation)" : `Ajout de ${evt.produitNom}`;
+                            }
                             return (
                               <div className="ref-list-row" key={evtId}>
                                 <span>{libelle}</span>
