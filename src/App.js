@@ -4211,11 +4211,12 @@ export default function CahierDeChai() {
        univoque, par groupId (mouvements créés après l'ajout de cette
        fonction) ou par recoupement sur les contenants/date/volume pour un
        mouvement plus ancien — sinon la correction est refusée ;
-     - la composition d'une cuve destination n'est recalculée que si aucun
-       autre apport/réception n'a eu lieu depuis sur cette cuve (source ou
-       destination) — sinon l'écart mesuré ne serait plus fiable, un peu
-       comme la correction d'un apport est bloquée si le lot a depuis reçu
-       du vin d'un transfert (voir supprimerOperation). */
+     - la composition de la cuve SOURCE, elle, doit être inchangée depuis ce
+       mouvement pour pouvoir reméler la destination (sinon on ne sait plus
+       ce qui a réellement été envoyé) — mais peu importe ce qui s'est passé
+       sur la cuve destination depuis, le recalcul reste exact quel que soit
+       le nombre de mélanges intervenus là-bas depuis (voir le détail plus
+       bas, à l'endroit où la composition est recalculée). */
   const corrigerVolumeMouvement = (lotId, opId, nouveauVolume) => {
     const lot = lots[lotId];
     const op = (lot.operations || []).find((o) => o.id === opId);
@@ -4308,18 +4309,15 @@ export default function CahierDeChai() {
       if (!window.confirm(`Le nouveau volume dépasse la capacité de ${contenantDest.nom} (${contenantDest.capacite} hL). Continuer quand même ?`)) return false;
     }
 
-    // Si un autre apport/réception a eu lieu sur la cuve destination depuis
-    // ce mouvement, sa composition dépend déjà du résultat (juste ou faux)
-    // de celui-ci — le recalcul ne serait plus fiable.
-    const idxDest = lotDest.operations.findIndex((o) => o.id === destOp.id);
-    const mixApres = lotDest.operations.slice(idxDest + 1).some((o) => o.type === 'reception' || o.type === 'apport');
-    if (mixApres) {
-      alert("Cette cuve a eu d'autres apports ou transferts reçus depuis ce mouvement : sa composition ne peut plus être recalculée en toute sécurité. Enregistre un nouveau Transfert ou une Sortie de volume pour corriger l'écart.");
-      return false;
-    }
-    // Même vérification côté source si sa composition doit être réutilisée
-    // pour reméler la destination (cas d'une réception dans une cuve déjà
-    // occupée) : si elle a changé depuis, l'écart n'est plus fiable non plus.
+    // Note : peu importe qu'un autre apport/réception ait eu lieu sur la
+    // cuve destination depuis ce mouvement — comme chaque mélange est une
+    // moyenne pondérée par volume (melangerCompositions), retirer le poids
+    // de l'ancien volume et ajouter celui du nouveau (voir plus bas) donne
+    // exactement le même résultat que si ce mouvement avait eu ce volume
+    // dès le départ, quels que soient les mélanges intervenus depuis sur
+    // cette cuve. Ce qui reste indispensable, c'est que la composition de
+    // la cuve SOURCE n'ait pas changé depuis (sinon on ne saurait plus ce
+    // qui a réellement été envoyé) :
     if (destOp.type === 'reception') {
       const idxSrc = lotSrc.operations.findIndex((o) => o.id === sourceOpId);
       const mixSrcApres = lotSrc.operations.slice(idxSrc + 1).some((o) => o.type === 'reception' || o.type === 'apport');
@@ -4345,11 +4343,15 @@ export default function CahierDeChai() {
         ? nvLotDest.contenants.map((c) => (c.contenantId === destOp.contenantDestId ? { ...c, volume: volDestApres } : c))
         : [...nvLotDest.contenants, { contenantId: destOp.contenantDestId, volume: volDestApres }];
       if (destOp.type === 'reception') {
-        // Pas besoin de connaître la composition de la cuve destination
-        // avant ce mélange : comme rien n'a changé sa composition depuis
-        // (mixApres ci-dessus), sa composition actuelle est exactement le
-        // résultat de ce mélange avec l'ancien volume — il suffit donc de
-        // retirer le poids de l'ancien volume et d'ajouter celui du nouveau.
+        // Chaque mélange (celui-ci comme tous ceux qui ont pu suivre sur
+        // cette cuve) est une moyenne pondérée par volume : retirer le poids
+        // de l'ancien volume envoyé et ajouter celui du nouveau, directement
+        // sur la composition ACTUELLE de la cuve destination, donne
+        // exactement le même résultat que si ce mouvement avait eu ce
+        // volume dès le départ — quel que soit le nombre de mélanges
+        // intervenus depuis sur cette cuve (l'opération étant linéaire et
+        // associative, l'ordre des mélanges n'a pas d'importance). Aucun
+        // instantané "avant mélange" n'est donc nécessaire.
         const totalDestActuel = volumeLot(lotDest);
         const totalDestNouveau = round2(totalDestActuel + delta);
         const pctSrc = (id) => {
