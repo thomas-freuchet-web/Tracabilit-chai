@@ -5142,17 +5142,23 @@ export default function CahierDeChai() {
     }
   };
 
-  // Remontage recommandé par le protocole pour le coefficient courant — pas
-  // de débit de pompe connu à l'avance (ça dépend de la pompe dispo ce
-  // jour-là), donc la tâche pré-remplit juste le volume à remonter ; le
-  // reste (vitesse, passages) se choisit en ouvrant la tâche.
+  // Remontage recommandé par le protocole pour le coefficient courant —
+  // toujours splitté en 3 passages (3 tâches distinctes, comme la
+  // planification manuelle en plusieurs fois), le volume total étant divisé
+  // par 3. Pas de débit de pompe connu à l'avance (ça dépend de la pompe
+  // dispo ce jour-là), donc chaque tâche pré-remplit juste son volume ; le
+  // reste (vitesse) se choisit en ouvrant la tâche.
   const creerTacheRemontage = (lotId, coefficient) => {
     const lot = lots[lotId];
-    const volumeRemontage = round2(coefficient * volumeLot(lot));
-    ajouterOrdreTravail({
-      date: today(), type: 'travail', titre: `Programmation — ${lot.code} : Remontage`, lotId,
-      details: { action: ACTION_REMONTAGE, coefficientVolume: String(coefficient), volumeRemontage: String(volumeRemontage), debitPompe: '', nbPassages: '1' },
-    });
+    const volumeTotal = round2(coefficient * volumeLot(lot));
+    const n = 3;
+    const volumePassage = round2(volumeTotal / n);
+    for (let i = 1; i <= n; i++) {
+      ajouterOrdreTravail({
+        date: today(), type: 'travail', titre: `Programmation — ${lot.code} : Remontage (${i}/${n})`, lotId,
+        details: { action: ACTION_REMONTAGE, coefficientVolume: '', volumeRemontage: String(volumePassage), debitPompe: '', nbPassages: '1' },
+      });
+    }
   };
 
   // Alerte email — best effort : l'alerte in-app (alertesTemperature) reste
