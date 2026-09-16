@@ -2576,26 +2576,35 @@ function ModaleEditApport({ op, contenants, parcelles, onValider, onFermer }) {
 
 const LIBELLES_MOUVEMENT = { transfert: 'Transfert', reception: 'Réception', origine: 'Origine', deplacement: 'Déplacement' };
 
-/* Édition légère d'un transfert/réception/déplacement : seuls le motif et
-   la note sont modifiables. Le volume et les contenants ne le sont pas —
-   ils ont mis à jour DEUX lots symétriquement (le lot source et le lot
-   destination), les corriger après coup romprait leur cohérence croisée ;
-   pour un vrai écart de volume, un nouveau Transfert ou une Sortie de
-   volume reste la voie sûre. */
+/* Édition d'un transfert/réception/origine/déplacement : motif et note sont
+   toujours modifiables. Le volume l'est aussi quand ce mouvement porte un
+   groupId (créé après l'ajout de cette fonctionnalité) reliant les deux
+   lots concernés — la correction répercute alors l'écart sur l'autre cuve
+   (voir corrigerVolumeMouvement). Pour un mouvement plus ancien, ou si la
+   correction est refusée (cuve depuis modifiée), le volume reste figé et
+   un nouveau Transfert ou une Sortie de volume reste la voie sûre. */
 function ModaleEditMouvement({ op, contenants, onValider, onFermer }) {
-  const [f, setF] = useState({ motif: op.motif || '', note: op.note || op.notes || '' });
+  const [f, setF] = useState({ motif: op.motif || '', note: op.note || op.notes || '', volume: String(op.volume) });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const nom = (id) => (contenants[id] ? contenants[id].nom : '?');
+  const volumeEditable = op.type === 'deplacement' || !!op.groupId;
   return (
     <Modal title={`Modifier — ${LIBELLES_MOUVEMENT[op.type] || op.type}`}
       subtitle={`${op.date} — ${op.volume} hL · ${nom(op.contenantSourceId)} → ${nom(op.contenantDestId)}`}
       onClose={onFermer}>
       <Field label="Nature de l'opération"><input type="text" value={f.motif} onChange={(e) => set('motif', e.target.value)} /></Field>
-      <Field label="Note" hint="Le volume et les contenants ne sont pas modifiables ici : ils ont mis à jour deux lots en même temps. Utilise Transfert ou Sortie de volume pour corriger un écart de volume.">
+      {volumeEditable ? (
+        <Field label="Volume envoyé (hL)" hint="L'écart est répercuté sur la cuve destination.">
+          <input type="number" step="0.1" value={f.volume} onChange={(e) => set('volume', e.target.value)} />
+        </Field>
+      ) : (
+        <p className="field-hint">Le volume et les contenants ne sont pas modifiables ici : ce mouvement est trop ancien pour être relié de façon fiable à la cuve destination. Utilise un nouveau Transfert ou une Sortie de volume pour corriger un écart de volume.</p>
+      )}
+      <Field label="Note" hint="Optionnel">
         <textarea value={f.note} onChange={(e) => set('note', e.target.value)} />
       </Field>
       <div className="form-actions">
-        <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>Enregistrer</button>
+        <button className="btn btn-primary" onClick={() => { if (onValider(volumeEditable ? f : { ...f, volume: undefined })) onFermer(); }}>Enregistrer</button>
         <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
       </div>
     </Modal>
@@ -4106,16 +4115,21 @@ export default function CahierDeChai() {
 
       /* --- Cas 1 : la destination contient déjà du vin --- */
       if (occDest && occDest.lotId !== lotSourceId) {
+        const groupId = uid('grp');
         const lotDest = { ...next[occDest.lotId] };
         const volDestTotal = volumeLot(lotDest);
+        const compositionAvant = lotDest.composition;
         lotDest.composition = melangerCompositions(lotDest.composition, volDestTotal, lotSrc.composition, volume);
         lotDest.contenants = lotDest.contenants.map((c) =>
           c.contenantId === contenantDestId ? { ...c, volume: round2(c.volume + volume) } : c
         );
         lotDest.parents = [...new Set([...(lotDest.parents || []), lotSourceId])];
         lotDest.operations = [...(lotDest.operations || []), {
-          id: uid('op'), type: 'reception', ...opCommune, volume,
+          id: uid('op'), type: 'reception', ...opCommune, volume, groupId,
           contenantSourceId, contenantDestId, lotAutreId: lotSourceId, lotAutreCode: lotSrc.code,
+          // Instantané d'avant mélange — permet de recalculer proprement la
+          // composition si le volume de ce mouvement est corrigé plus tard.
+          compositionAvant, volumeAvant: volDestTotal,
         }];
         next[occDest.lotId] = lotDest;
 
@@ -4123,7 +4137,7 @@ export default function CahierDeChai() {
           .map((c) => (c.contenantId === contenantSourceId ? { ...c, volume: round2(c.volume - volume) } : c))
           .filter((c) => c.volume > 0.001);
         lotSrc.operations = [...(lotSrc.operations || []), {
-          id: uid('op'), type: 'transfert', ...opCommune, volume,
+          id: uid('op'), type: 'transfert', ...opCommune, volume, groupId,
           contenantSourceId, contenantDestId, lotAutreId: occDest.lotId, lotAutreCode: lotDest.code,
         }];
         if (volumeLot(lotSrc) <= 0.001) lotSrc.statut = 'archive';
@@ -4145,6 +4159,7 @@ export default function CahierDeChai() {
 
       /* --- Cas 3 : la destination est vide, transfert partiel → lot enfant --- */
       if (!occDest) {
+        const groupId = uid('grp');
         const idEnfant = uid('lot');
         const suffixe = Object.values(prev).filter((l) => (l.parents || []).includes(lotSourceId)).length + 1;
         next[idEnfant] = {
@@ -4155,7 +4170,7 @@ export default function CahierDeChai() {
           contenants: [{ contenantId: contenantDestId, volume }],
           phase: lotSrc.phase, statut: 'actif', parents: [lotSourceId],
           operations: [{
-            id: uid('op'), type: 'origine', ...opCommune, volume,
+            id: uid('op'), type: 'origine', ...opCommune, volume, groupId,
             contenantSourceId, contenantDestId, lotAutreId: lotSourceId, lotAutreCode: lotSrc.code,
           }],
           createdAt: new Date().toISOString(),
@@ -4164,7 +4179,7 @@ export default function CahierDeChai() {
           .map((c) => (c.contenantId === contenantSourceId ? { ...c, volume: round2(c.volume - volume) } : c))
           .filter((c) => c.volume > 0.001);
         lotSrc.operations = [...(lotSrc.operations || []), {
-          id: uid('op'), type: 'transfert', ...opCommune, volume,
+          id: uid('op'), type: 'transfert', ...opCommune, volume, groupId,
           contenantSourceId, contenantDestId, lotAutreId: idEnfant, lotAutreCode: next[idEnfant].code,
         }];
         if (volumeLot(lotSrc) <= 0.001) lotSrc.statut = 'archive';
@@ -4198,10 +4213,153 @@ export default function CahierDeChai() {
     return true;
   };
 
+  /* Corrige le volume d'un transfert/réception/origine/déplacement déjà
+     enregistré, et répercute l'écart sur l'autre cuve concernée.
+     Garde-fous, car cette correction touche potentiellement DEUX lots :
+     - seuls les mouvements créés après l'ajout de cette fonction portent un
+       groupId reliant les deux côtés (l'historique plus ancien reste figé,
+       comme avant — corriger un mouvement sans lien fiable vers son
+       pendant romprait leur cohérence croisée) ;
+     - la composition d'une cuve destination n'est recalculée que si aucun
+       autre apport/réception n'a eu lieu depuis sur cette cuve (source ou
+       destination) — sinon l'écart mesuré ne serait plus fiable, un peu
+       comme la correction d'un apport est bloquée si le lot a depuis reçu
+       du vin d'un transfert (voir supprimerOperation). */
+  const corrigerVolumeMouvement = (lotId, opId, nouveauVolume) => {
+    const lot = lots[lotId];
+    const op = (lot.operations || []).find((o) => o.id === opId);
+    if (!op) return false;
+
+    // Déplacement interne : un seul lot, pas de composition en jeu.
+    if (op.type === 'deplacement') {
+      const ligneSrc = (lot.contenants || []).find((c) => c.contenantId === op.contenantSourceId);
+      const ligneDest = (lot.contenants || []).find((c) => c.contenantId === op.contenantDestId);
+      const delta = round2(nouveauVolume - op.volume);
+      const volSrcApres = round2((ligneSrc ? ligneSrc.volume : 0) - delta);
+      const volDestApres = round2((ligneDest ? ligneDest.volume : 0) + delta);
+      if (volSrcApres < -0.001 || volDestApres < -0.001) {
+        alert('Volume insuffisant pour ce changement : des mouvements ont eu lieu depuis sur ces contenants.');
+        return false;
+      }
+      setLots((prev) => {
+        const l = { ...prev[lotId] };
+        l.operations = l.operations.map((o) => (o.id === opId ? { ...o, volume: nouveauVolume } : o));
+        const dejaSrc = l.contenants.some((c) => c.contenantId === op.contenantSourceId);
+        l.contenants = l.contenants
+          .map((c) => (c.contenantId === op.contenantDestId ? { ...c, volume: volDestApres } : c))
+          .map((c) => (c.contenantId === op.contenantSourceId ? { ...c, volume: volSrcApres } : c))
+          .filter((c) => c.volume > 0.001);
+        if (!dejaSrc && volSrcApres > 0.001) l.contenants.push({ contenantId: op.contenantSourceId, volume: volSrcApres });
+        return { ...prev, [lotId]: l };
+      });
+      return true;
+    }
+
+    if (!['transfert', 'reception', 'origine'].includes(op.type)) return false;
+
+    // Normaliser : quel que soit le côté depuis lequel la modale a été
+    // ouverte, on retrouve le côté "source" (qui envoie) et le côté
+    // "destination" (qui reçoit) via le groupId commun aux deux opérations.
+    let sourceLotId, sourceOpId, destLotId, destOp;
+    if (op.type === 'transfert') {
+      sourceLotId = lotId; sourceOpId = opId; destLotId = op.lotAutreId;
+      destOp = destLotId && lots[destLotId]
+        ? (lots[destLotId].operations || []).find((o) => o.groupId && o.groupId === op.groupId && ['reception', 'origine'].includes(o.type))
+        : null;
+    } else {
+      destLotId = lotId; destOp = op; sourceLotId = op.lotAutreId;
+      const opSource = sourceLotId && lots[sourceLotId]
+        ? (lots[sourceLotId].operations || []).find((o) => o.groupId && o.groupId === op.groupId && o.type === 'transfert')
+        : null;
+      sourceOpId = opSource ? opSource.id : null;
+    }
+    if (!op.groupId || !destOp || !sourceOpId || !lots[sourceLotId] || !lots[destLotId]) {
+      alert("Ce mouvement a été enregistré avant l'ajout de cette fonctionnalité (ou la cuve liée n'existe plus) : le volume ne peut pas être corrigé automatiquement. Enregistre un nouveau Transfert ou une Sortie de volume pour corriger l'écart.");
+      return false;
+    }
+
+    const lotSrc = lots[sourceLotId];
+    const lotDest = lots[destLotId];
+    const opSrc = lotSrc.operations.find((o) => o.id === sourceOpId);
+    const delta = round2(nouveauVolume - opSrc.volume);
+
+    const ligneSrc = (lotSrc.contenants || []).find((c) => c.contenantId === opSrc.contenantSourceId);
+    const volSrcApres = round2((ligneSrc ? ligneSrc.volume : 0) - delta);
+    if (volSrcApres < -0.001) {
+      alert(`Volume insuffisant dans le contenant source : ${ligneSrc ? ligneSrc.volume : 0} hL disponibles.`);
+      return false;
+    }
+    const ligneDest = (lotDest.contenants || []).find((c) => c.contenantId === destOp.contenantDestId);
+    const volDestApres = round2((ligneDest ? ligneDest.volume : 0) + delta);
+    if (volDestApres < -0.001) {
+      alert("Volume insuffisant dans la cuve destination : des mouvements ont eu lieu depuis, ce volume n'y est plus disponible.");
+      return false;
+    }
+    const contenantDest = contenants[destOp.contenantDestId];
+    if (contenantDest && contenantDest.capacite && volDestApres > contenantDest.capacite + 0.001) {
+      if (!window.confirm(`Le nouveau volume dépasse la capacité de ${contenantDest.nom} (${contenantDest.capacite} hL). Continuer quand même ?`)) return false;
+    }
+
+    // Si un autre apport/réception a eu lieu sur la cuve destination depuis
+    // ce mouvement, sa composition dépend déjà du résultat (juste ou faux)
+    // de celui-ci — le recalcul ne serait plus fiable.
+    const idxDest = lotDest.operations.findIndex((o) => o.id === destOp.id);
+    const mixApres = lotDest.operations.slice(idxDest + 1).some((o) => o.type === 'reception' || o.type === 'apport');
+    if (mixApres) {
+      alert("Cette cuve a eu d'autres apports ou transferts reçus depuis ce mouvement : sa composition ne peut plus être recalculée en toute sécurité. Enregistre un nouveau Transfert ou une Sortie de volume pour corriger l'écart.");
+      return false;
+    }
+    // Même vérification côté source si sa composition doit être réutilisée
+    // pour reméler la destination (cas d'une réception dans une cuve déjà
+    // occupée) : si elle a changé depuis, l'écart n'est plus fiable non plus.
+    if (destOp.type === 'reception') {
+      const idxSrc = lotSrc.operations.findIndex((o) => o.id === sourceOpId);
+      const mixSrcApres = lotSrc.operations.slice(idxSrc + 1).some((o) => o.type === 'reception' || o.type === 'apport');
+      if (mixSrcApres) {
+        alert("La cuve source a reçu du vin depuis ce mouvement : sa composition a changé, l'écart ne peut plus être recalculé en toute sécurité. Enregistre un nouveau Transfert ou une Sortie de volume pour corriger l'écart.");
+        return false;
+      }
+    }
+
+    setLots((prev) => {
+      const next = { ...prev };
+      const nvLotSrc = { ...next[sourceLotId] };
+      nvLotSrc.contenants = nvLotSrc.contenants
+        .map((c) => (c.contenantId === opSrc.contenantSourceId ? { ...c, volume: volSrcApres } : c))
+        .filter((c) => c.volume > 0.001);
+      nvLotSrc.operations = nvLotSrc.operations.map((o) => (o.id === sourceOpId ? { ...o, volume: nouveauVolume } : o));
+      nvLotSrc.statut = volumeLot(nvLotSrc) > 0.001 ? 'actif' : 'archive';
+      next[sourceLotId] = nvLotSrc;
+
+      const nvLotDest = { ...next[destLotId] };
+      const dejaDest = nvLotDest.contenants.some((c) => c.contenantId === destOp.contenantDestId);
+      nvLotDest.contenants = dejaDest
+        ? nvLotDest.contenants.map((c) => (c.contenantId === destOp.contenantDestId ? { ...c, volume: volDestApres } : c))
+        : [...nvLotDest.contenants, { contenantId: destOp.contenantDestId, volume: volDestApres }];
+      if (destOp.type === 'reception') {
+        nvLotDest.composition = melangerCompositions(destOp.compositionAvant || [], destOp.volumeAvant || 0, nvLotSrc.composition, nouveauVolume);
+      }
+      nvLotDest.operations = nvLotDest.operations.map((o) => (o.id === destOp.id ? { ...o, volume: nouveauVolume } : o));
+      next[destLotId] = nvLotDest;
+      return next;
+    });
+    return true;
+  };
+
   /* Corrige le motif/la note d'un transfert, réception ou déplacement déjà
-     enregistré — le volume et les contenants restent figés (voir
-     ModaleEditMouvement). */
+     enregistré. Le volume peut aussi être corrigé (voir
+     corrigerVolumeMouvement ci-dessus) quand le mouvement le permet — sinon
+     ModaleEditMouvement n'affiche pas le champ volume. */
   const majMouvement = (lotId, opId, form) => {
+    if (form.volume !== undefined) {
+      const nouveauVolume = round2(Number(form.volume));
+      const lot = lots[lotId];
+      const op = (lot.operations || []).find((o) => o.id === opId);
+      if (op && Math.abs(nouveauVolume - op.volume) > 0.001) {
+        if (!nouveauVolume || nouveauVolume <= 0) { alert('Volume invalide'); return false; }
+        if (!corrigerVolumeMouvement(lotId, opId, nouveauVolume)) return false;
+      }
+    }
     setLots((prev) => ({
       ...prev,
       [lotId]: {
