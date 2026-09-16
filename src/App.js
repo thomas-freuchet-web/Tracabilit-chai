@@ -2576,35 +2576,30 @@ function ModaleEditApport({ op, contenants, parcelles, onValider, onFermer }) {
 
 const LIBELLES_MOUVEMENT = { transfert: 'Transfert', reception: 'Réception', origine: 'Origine', deplacement: 'Déplacement' };
 
-/* Édition d'un transfert/réception/origine/déplacement : motif et note sont
-   toujours modifiables. Le volume l'est aussi quand ce mouvement porte un
-   groupId (créé après l'ajout de cette fonctionnalité) reliant les deux
-   lots concernés — la correction répercute alors l'écart sur l'autre cuve
-   (voir corrigerVolumeMouvement). Pour un mouvement plus ancien, ou si la
-   correction est refusée (cuve depuis modifiée), le volume reste figé et
-   un nouveau Transfert ou une Sortie de volume reste la voie sûre. */
+/* Édition d'un transfert/réception/origine/déplacement : motif, note et
+   volume sont modifiables. La correction du volume répercute l'écart sur
+   l'autre cuve concernée (voir corrigerVolumeMouvement) — elle retrouve le
+   mouvement pendant sur l'autre lot par groupId, ou par recoupement pour un
+   mouvement plus ancien. Si cette cuve ne peut pas être retrouvée de façon
+   fiable, ou si sa composition a changé depuis, la correction est refusée
+   avec un message explicite et rien n'est modifié. */
 function ModaleEditMouvement({ op, contenants, onValider, onFermer }) {
   const [f, setF] = useState({ motif: op.motif || '', note: op.note || op.notes || '', volume: String(op.volume) });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const nom = (id) => (contenants[id] ? contenants[id].nom : '?');
-  const volumeEditable = op.type === 'deplacement' || !!op.groupId;
   return (
     <Modal title={`Modifier — ${LIBELLES_MOUVEMENT[op.type] || op.type}`}
       subtitle={`${op.date} — ${op.volume} hL · ${nom(op.contenantSourceId)} → ${nom(op.contenantDestId)}`}
       onClose={onFermer}>
       <Field label="Nature de l'opération"><input type="text" value={f.motif} onChange={(e) => set('motif', e.target.value)} /></Field>
-      {volumeEditable ? (
-        <Field label="Volume envoyé (hL)" hint="L'écart est répercuté sur la cuve destination.">
-          <input type="number" step="0.1" value={f.volume} onChange={(e) => set('volume', e.target.value)} />
-        </Field>
-      ) : (
-        <p className="field-hint">Le volume et les contenants ne sont pas modifiables ici : ce mouvement est trop ancien pour être relié de façon fiable à la cuve destination. Utilise un nouveau Transfert ou une Sortie de volume pour corriger un écart de volume.</p>
-      )}
+      <Field label="Volume envoyé (hL)" hint="L'écart est répercuté sur la cuve destination.">
+        <input type="number" step="0.1" value={f.volume} onChange={(e) => set('volume', e.target.value)} />
+      </Field>
       <Field label="Note" hint="Optionnel">
         <textarea value={f.note} onChange={(e) => set('note', e.target.value)} />
       </Field>
       <div className="form-actions">
-        <button className="btn btn-primary" onClick={() => { if (onValider(volumeEditable ? f : { ...f, volume: undefined })) onFermer(); }}>Enregistrer</button>
+        <button className="btn btn-primary" onClick={() => { if (onValider(f)) onFermer(); }}>Enregistrer</button>
         <button className="btn btn-outline" onClick={onFermer}>Annuler</button>
       </div>
     </Modal>
@@ -4118,7 +4113,6 @@ export default function CahierDeChai() {
         const groupId = uid('grp');
         const lotDest = { ...next[occDest.lotId] };
         const volDestTotal = volumeLot(lotDest);
-        const compositionAvant = lotDest.composition;
         lotDest.composition = melangerCompositions(lotDest.composition, volDestTotal, lotSrc.composition, volume);
         lotDest.contenants = lotDest.contenants.map((c) =>
           c.contenantId === contenantDestId ? { ...c, volume: round2(c.volume + volume) } : c
@@ -4127,9 +4121,6 @@ export default function CahierDeChai() {
         lotDest.operations = [...(lotDest.operations || []), {
           id: uid('op'), type: 'reception', ...opCommune, volume, groupId,
           contenantSourceId, contenantDestId, lotAutreId: lotSourceId, lotAutreCode: lotSrc.code,
-          // Instantané d'avant mélange — permet de recalculer proprement la
-          // composition si le volume de ce mouvement est corrigé plus tard.
-          compositionAvant, volumeAvant: volDestTotal,
         }];
         next[occDest.lotId] = lotDest;
 
@@ -4216,10 +4207,10 @@ export default function CahierDeChai() {
   /* Corrige le volume d'un transfert/réception/origine/déplacement déjà
      enregistré, et répercute l'écart sur l'autre cuve concernée.
      Garde-fous, car cette correction touche potentiellement DEUX lots :
-     - seuls les mouvements créés après l'ajout de cette fonction portent un
-       groupId reliant les deux côtés (l'historique plus ancien reste figé,
-       comme avant — corriger un mouvement sans lien fiable vers son
-       pendant romprait leur cohérence croisée) ;
+     - le mouvement pendant sur l'autre lot doit être retrouvé de façon
+       univoque, par groupId (mouvements créés après l'ajout de cette
+       fonction) ou par recoupement sur les contenants/date/volume pour un
+       mouvement plus ancien — sinon la correction est refusée ;
      - la composition d'une cuve destination n'est recalculée que si aucun
        autre apport/réception n'a eu lieu depuis sur cette cuve (source ou
        destination) — sinon l'écart mesuré ne serait plus fiable, un peu
@@ -4257,24 +4248,41 @@ export default function CahierDeChai() {
 
     if (!['transfert', 'reception', 'origine'].includes(op.type)) return false;
 
+    // Retrouver le mouvement pendant sur l'autre lot : par groupId quand il
+    // existe (mouvements créés après l'ajout de cette fonctionnalité), sinon
+    // par recoupement (mêmes contenants, même date, même volume, et chaque
+    // op pointe bien vers l'id de l'autre lot) — ce qui permet de corriger
+    // aussi les mouvements plus anciens, tant que le recoupement est
+    // univoque (un seul candidat trouvé).
+    const parGroupId = (autreLot, types) => (autreLot.operations || [])
+      .find((o) => o.groupId && o.groupId === op.groupId && types.includes(o.type));
+    const parRecoupement = (autreLot, lotIdRef, types) => {
+      const candidats = (autreLot.operations || []).filter((o) => types.includes(o.type) && o.lotAutreId === lotIdRef
+        && o.contenantSourceId === op.contenantSourceId && o.contenantDestId === op.contenantDestId
+        && o.date === op.date && Math.abs(o.volume - op.volume) < 0.001);
+      return candidats.length === 1 ? candidats[0] : null;
+    };
+
     // Normaliser : quel que soit le côté depuis lequel la modale a été
     // ouverte, on retrouve le côté "source" (qui envoie) et le côté
-    // "destination" (qui reçoit) via le groupId commun aux deux opérations.
+    // "destination" (qui reçoit).
     let sourceLotId, sourceOpId, destLotId, destOp;
     if (op.type === 'transfert') {
       sourceLotId = lotId; sourceOpId = opId; destLotId = op.lotAutreId;
-      destOp = destLotId && lots[destLotId]
-        ? (lots[destLotId].operations || []).find((o) => o.groupId && o.groupId === op.groupId && ['reception', 'origine'].includes(o.type))
-        : null;
+      const autreLot = destLotId ? lots[destLotId] : null;
+      if (autreLot) {
+        destOp = (op.groupId && parGroupId(autreLot, ['reception', 'origine'])) || parRecoupement(autreLot, lotId, ['reception', 'origine']);
+      }
     } else {
       destLotId = lotId; destOp = op; sourceLotId = op.lotAutreId;
-      const opSource = sourceLotId && lots[sourceLotId]
-        ? (lots[sourceLotId].operations || []).find((o) => o.groupId && o.groupId === op.groupId && o.type === 'transfert')
+      const autreLot = sourceLotId ? lots[sourceLotId] : null;
+      const opSource = autreLot
+        ? ((op.groupId && parGroupId(autreLot, ['transfert'])) || parRecoupement(autreLot, lotId, ['transfert']))
         : null;
       sourceOpId = opSource ? opSource.id : null;
     }
-    if (!op.groupId || !destOp || !sourceOpId || !lots[sourceLotId] || !lots[destLotId]) {
-      alert("Ce mouvement a été enregistré avant l'ajout de cette fonctionnalité (ou la cuve liée n'existe plus) : le volume ne peut pas être corrigé automatiquement. Enregistre un nouveau Transfert ou une Sortie de volume pour corriger l'écart.");
+    if (!destOp || !sourceOpId || !lots[sourceLotId] || !lots[destLotId]) {
+      alert("Impossible de retrouver de façon fiable la cuve liée à ce mouvement (ou elle n'existe plus) : le volume ne peut pas être corrigé automatiquement. Enregistre un nouveau Transfert ou une Sortie de volume pour corriger l'écart.");
       return false;
     }
 
@@ -4337,7 +4345,29 @@ export default function CahierDeChai() {
         ? nvLotDest.contenants.map((c) => (c.contenantId === destOp.contenantDestId ? { ...c, volume: volDestApres } : c))
         : [...nvLotDest.contenants, { contenantId: destOp.contenantDestId, volume: volDestApres }];
       if (destOp.type === 'reception') {
-        nvLotDest.composition = melangerCompositions(destOp.compositionAvant || [], destOp.volumeAvant || 0, nvLotSrc.composition, nouveauVolume);
+        // Pas besoin de connaître la composition de la cuve destination
+        // avant ce mélange : comme rien n'a changé sa composition depuis
+        // (mixApres ci-dessus), sa composition actuelle est exactement le
+        // résultat de ce mélange avec l'ancien volume — il suffit donc de
+        // retirer le poids de l'ancien volume et d'ajouter celui du nouveau.
+        const totalDestActuel = volumeLot(lotDest);
+        const totalDestNouveau = round2(totalDestActuel + delta);
+        const pctSrc = (id) => {
+          const c = (nvLotSrc.composition || []).find((x) => x.parcelleId === id);
+          return c ? c.pct : 0;
+        };
+        const toutesParcelles = new Set([
+          ...(lotDest.composition || []).map((c) => c.parcelleId),
+          ...(nvLotSrc.composition || []).map((c) => c.parcelleId),
+        ]);
+        nvLotDest.composition = [...toutesParcelles].map((id) => {
+          const pctDestActuel = (lotDest.composition || []).find((c) => c.parcelleId === id);
+          const pctAvant = pctDestActuel ? pctDestActuel.pct : 0;
+          const nouveauPct = totalDestNouveau > 0.001
+            ? round2(((pctAvant * totalDestActuel) + (pctSrc(id) * delta)) / totalDestNouveau)
+            : 0;
+          return { parcelleId: id, pct: nouveauPct };
+        }).filter((c) => c.pct > 0.001);
       }
       nvLotDest.operations = nvLotDest.operations.map((o) => (o.id === destOp.id ? { ...o, volume: nouveauVolume } : o));
       next[destLotId] = nvLotDest;
@@ -4347,9 +4377,9 @@ export default function CahierDeChai() {
   };
 
   /* Corrige le motif/la note d'un transfert, réception ou déplacement déjà
-     enregistré. Le volume peut aussi être corrigé (voir
-     corrigerVolumeMouvement ci-dessus) quand le mouvement le permet — sinon
-     ModaleEditMouvement n'affiche pas le champ volume. */
+     enregistré, ainsi que son volume si besoin (voir corrigerVolumeMouvement
+     ci-dessus, qui refuse la correction avec un message explicite quand
+     elle n'est pas fiable). */
   const majMouvement = (lotId, opId, form) => {
     if (form.volume !== undefined) {
       const nouveauVolume = round2(Number(form.volume));
