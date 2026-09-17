@@ -3839,8 +3839,9 @@ export default function CahierDeChai() {
   );
 
   // Vue "Par cuve" de l'onglet Ordre de travail : les tâches non faites,
-  // groupées par lot (toutes dates confondues) plutôt que par jour — pour
-  // voir d'un coup tout ce qui reste à faire sur une cuve donnée.
+  // groupées par lot puis, à l'intérieur de chaque lot, par jour — pour voir
+  // d'un coup tout ce qui reste à faire sur une cuve donnée, sans perdre le
+  // repère du jour.
   const ordresParCuve = useMemo(() => {
     const parLot = {};
     const sansCuve = [];
@@ -3852,10 +3853,15 @@ export default function CahierDeChai() {
       }
     });
     const trier = (liste) => [...liste].sort((a, b) => a.date.localeCompare(b.date) || a.creeLe.localeCompare(b.creeLe));
+    const parJour = (liste) => {
+      const parDate = {};
+      trier(liste).forEach((o) => (parDate[o.date] = parDate[o.date] || []).push(o));
+      return Object.keys(parDate).sort().map((date) => ({ date, ordres: parDate[date] }));
+    };
     const groupes = Object.keys(parLot)
-      .map((lotId) => ({ lot: lots[lotId], ordres: trier(parLot[lotId]) }))
+      .map((lotId) => ({ lot: lots[lotId], jours: parJour(parLot[lotId]) }))
       .sort((a, b) => a.lot.code.localeCompare(b.lot.code, undefined, { numeric: true }));
-    return { groupes, sansCuve: trier(sansCuve) };
+    return { groupes, sansCuve: parJour(sansCuve) };
   }, [ordresTravail, lots]);
 
   const stats = useMemo(() => {
@@ -6584,33 +6590,47 @@ export default function CahierDeChai() {
                     <EmptyState titre="Aucune tâche en attente" texte="Rien à faire sur aucune cuve pour l'instant." />
                   ) : (
                     <>
-                      {ordresParCuve.groupes.map(({ lot: l, ordres }) => (
-                        <div key={l.id} className="ordre-groupe-cuve" style={{ marginBottom: 18 }}>
-                          <div className="panel-head" style={{ marginBottom: 6 }}>
-                            <h4 style={{ margin: 0 }}>
-                              {l.code}
-                              <span className="muted small"> · {(l.contenants || []).map((c) => (contenants[c.contenantId] ? contenants[c.contenantId].nom : '?')).join(', ')} · {ordres.length} tâche{ordres.length > 1 ? 's' : ''}</span>
-                            </h4>
-                            <button className="btn btn-ghost btn-sm" onClick={() => ouvrirLot(l.id)}>Ouvrir la cuve</button>
+                      {ordresParCuve.groupes.map(({ lot: l, jours }) => {
+                        const nbTaches = jours.reduce((n, j) => n + j.ordres.length, 0);
+                        const nomsContenants = (l.contenants || []).map((c) => (contenants[c.contenantId] ? contenants[c.contenantId].nom : '?')).join(', ');
+                        return (
+                          <div key={l.id} className="ordre-groupe-cuve" style={{ marginBottom: 18 }}>
+                            <div className="panel-head" style={{ marginBottom: 6 }}>
+                              <h4 style={{ margin: 0 }}>
+                                {nomsContenants || l.code}
+                                <span className="muted small"> · {l.code} · {nbTaches} tâche{nbTaches > 1 ? 's' : ''}</span>
+                              </h4>
+                              <button className="btn btn-ghost btn-sm" onClick={() => ouvrirLot(l.id)}>Ouvrir la cuve</button>
+                            </div>
+                            {jours.map(({ date, ordres }) => (
+                              <div key={date} style={{ marginBottom: 10 }}>
+                                <div className="muted small" style={{ margin: '4px 0' }}>{date}</div>
+                                {ordres.map((o) => (
+                                  <LigneOrdreTravail key={o.id} ordre={o} lot={l} produits={produits} contenants={contenants}
+                                    onValider={validerOuOuvrirOrdre}
+                                    onModifier={(ord) => ouvrir('ordreTravail', { ordre: ord })}
+                                    onSupprimer={supprimerOrdreTravail}
+                                    onAnnuler={reouvrirOrdreTravail} />
+                                ))}
+                              </div>
+                            ))}
                           </div>
-                          {ordres.map((o) => (
-                            <LigneOrdreTravail key={o.id} ordre={o} lot={l} produits={produits} contenants={contenants} afficherDate
-                              onValider={validerOuOuvrirOrdre}
-                              onModifier={(ord) => ouvrir('ordreTravail', { ordre: ord })}
-                              onSupprimer={supprimerOrdreTravail}
-                              onAnnuler={reouvrirOrdreTravail} />
-                          ))}
-                        </div>
-                      ))}
+                        );
+                      })}
                       {ordresParCuve.sansCuve.length > 0 && (
                         <div className="ordre-groupe-cuve">
                           <h4>Sans cuve</h4>
-                          {ordresParCuve.sansCuve.map((o) => (
-                            <LigneOrdreTravail key={o.id} ordre={o} lot={null} produits={produits} contenants={contenants} afficherDate
-                              onValider={validerOuOuvrirOrdre}
-                              onModifier={(ord) => ouvrir('ordreTravail', { ordre: ord })}
-                              onSupprimer={supprimerOrdreTravail}
-                              onAnnuler={reouvrirOrdreTravail} />
+                          {ordresParCuve.sansCuve.map(({ date, ordres }) => (
+                            <div key={date} style={{ marginBottom: 10 }}>
+                              <div className="muted small" style={{ margin: '4px 0' }}>{date}</div>
+                              {ordres.map((o) => (
+                                <LigneOrdreTravail key={o.id} ordre={o} lot={null} produits={produits} contenants={contenants}
+                                  onValider={validerOuOuvrirOrdre}
+                                  onModifier={(ord) => ouvrir('ordreTravail', { ordre: ord })}
+                                  onSupprimer={supprimerOrdreTravail}
+                                  onAnnuler={reouvrirOrdreTravail} />
+                              ))}
+                            </div>
                           ))}
                         </div>
                       )}
