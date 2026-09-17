@@ -602,7 +602,7 @@ function EmptyState({ titre, texte, action }) {
   );
 }
 
-function LigneOrdreTravail({ ordre, lot, produits, contenants, onValider, onModifier, onSupprimer, onAnnuler }) {
+function LigneOrdreTravail({ ordre, lot, produits, contenants, onValider, onModifier, onSupprimer, onAnnuler, afficherDate }) {
   const typeInfo = TYPES_ORDRE.find((t) => t.id === ordre.type) || TYPES_ORDRE[0];
   const d = ordre.details || {};
   let detail = '';
@@ -639,6 +639,7 @@ function LigneOrdreTravail({ ordre, lot, produits, contenants, onValider, onModi
         <div className="ordre-titre">{ordre.titre}</div>
         <div className="muted small">
           <span className={`op-tag op-${ordre.type}`}>{typeInfo.label}</span>
+          {afficherDate && <> · {ordre.date}</>}
           {lot && <> · {lot.code}{nomsContenants ? ` (${nomsContenants})` : ''}</>}
           {detail && <> · {detail}</>}
           {ordre.fait && ordre.faitLe && <> · fait à {heureLocale(ordre.faitLe)}</>}
@@ -3702,6 +3703,7 @@ export default function CahierDeChai() {
   const [recherche, setRecherche] = useState('');
   const [triEntreesVendange, setTriEntreesVendange] = useState('date'); // date | parcelle
   const [dateOrdre, setDateOrdre] = useState(() => today()); // jour affiché dans l'onglet Ordre de travail
+  const [modeOrdre, setModeOrdre] = useState('jour'); // jour | cuve — vue de l'onglet Ordre de travail
 
   /* ---------- Modales ---------- */
   const [modale, setModale] = useState(null); // {type, payload}
@@ -3835,6 +3837,26 @@ export default function CahierDeChai() {
       .sort((a, b) => (a.fait === b.fait ? a.creeLe.localeCompare(b.creeLe) : a.fait ? 1 : -1)),
     [ordresTravail, dateOrdre]
   );
+
+  // Vue "Par cuve" de l'onglet Ordre de travail : les tâches non faites,
+  // groupées par lot (toutes dates confondues) plutôt que par jour — pour
+  // voir d'un coup tout ce qui reste à faire sur une cuve donnée.
+  const ordresParCuve = useMemo(() => {
+    const parLot = {};
+    const sansCuve = [];
+    ordresTravail.filter((o) => !o.fait).forEach((o) => {
+      if (o.lotId && lots[o.lotId]) {
+        (parLot[o.lotId] = parLot[o.lotId] || []).push(o);
+      } else {
+        sansCuve.push(o);
+      }
+    });
+    const trier = (liste) => [...liste].sort((a, b) => a.date.localeCompare(b.date) || a.creeLe.localeCompare(b.creeLe));
+    const groupes = Object.keys(parLot)
+      .map((lotId) => ({ lot: lots[lotId], ordres: trier(parLot[lotId]) }))
+      .sort((a, b) => a.lot.code.localeCompare(b.lot.code, undefined, { numeric: true }));
+    return { groupes, sansCuve: trier(sansCuve) };
+  }, [ordresTravail, lots]);
 
   const stats = useMemo(() => {
     let vRouge = 0, vBlanc = 0, vRose = 0, vAutre = 0, total = 0;
@@ -6530,23 +6552,70 @@ export default function CahierDeChai() {
               <div className="panel">
                 <div className="panel-head">
                   <div className="quick-row" style={{ margin: 0 }}>
-                    <button className="btn btn-ghost btn-sm" onClick={() => setDateOrdre((d) => decalerDate(d, -1))}>‹</button>
-                    <input type="date" value={dateOrdre} onChange={(e) => setDateOrdre(e.target.value)} />
-                    <button className="btn btn-ghost btn-sm" onClick={() => setDateOrdre((d) => decalerDate(d, 1))}>›</button>
-                    {dateOrdre !== today() && <button className="btn btn-ghost btn-sm" onClick={() => setDateOrdre(today())}>Aujourd'hui</button>}
+                    <div className="toggle">
+                      <button className={modeOrdre === 'jour' ? 'active' : ''} onClick={() => setModeOrdre('jour')}>Par jour</button>
+                      <button className={modeOrdre === 'cuve' ? 'active' : ''} onClick={() => setModeOrdre('cuve')}>Par cuve</button>
+                    </div>
+                    {modeOrdre === 'jour' && (
+                      <>
+                        <button className="btn btn-ghost btn-sm" onClick={() => setDateOrdre((d) => decalerDate(d, -1))}>‹</button>
+                        <input type="date" value={dateOrdre} onChange={(e) => setDateOrdre(e.target.value)} />
+                        <button className="btn btn-ghost btn-sm" onClick={() => setDateOrdre((d) => decalerDate(d, 1))}>›</button>
+                        {dateOrdre !== today() && <button className="btn btn-ghost btn-sm" onClick={() => setDateOrdre(today())}>Aujourd'hui</button>}
+                      </>
+                    )}
                   </div>
                   <button className="btn btn-primary btn-sm" onClick={() => ouvrir('ordreTravail', { dateInitiale: dateOrdre })}>+ Ajouter une tâche</button>
                 </div>
-                {ordresDateAffichee.length === 0 ? (
-                  <EmptyState titre="Aucune tâche" texte={`Rien de prévu pour le ${dateOrdre}.`} />
+                {modeOrdre === 'jour' ? (
+                  ordresDateAffichee.length === 0 ? (
+                    <EmptyState titre="Aucune tâche" texte={`Rien de prévu pour le ${dateOrdre}.`} />
+                  ) : (
+                    ordresDateAffichee.map((o) => (
+                      <LigneOrdreTravail key={o.id} ordre={o} lot={o.lotId ? lots[o.lotId] : null} produits={produits} contenants={contenants}
+                        onValider={validerOuOuvrirOrdre}
+                        onModifier={(ord) => ouvrir('ordreTravail', { ordre: ord })}
+                        onSupprimer={supprimerOrdreTravail}
+                        onAnnuler={reouvrirOrdreTravail} />
+                    ))
+                  )
                 ) : (
-                  ordresDateAffichee.map((o) => (
-                    <LigneOrdreTravail key={o.id} ordre={o} lot={o.lotId ? lots[o.lotId] : null} produits={produits} contenants={contenants}
-                      onValider={validerOuOuvrirOrdre}
-                      onModifier={(ord) => ouvrir('ordreTravail', { ordre: ord })}
-                      onSupprimer={supprimerOrdreTravail}
-                      onAnnuler={reouvrirOrdreTravail} />
-                  ))
+                  ordresParCuve.groupes.length === 0 && ordresParCuve.sansCuve.length === 0 ? (
+                    <EmptyState titre="Aucune tâche en attente" texte="Rien à faire sur aucune cuve pour l'instant." />
+                  ) : (
+                    <>
+                      {ordresParCuve.groupes.map(({ lot: l, ordres }) => (
+                        <div key={l.id} className="ordre-groupe-cuve" style={{ marginBottom: 18 }}>
+                          <div className="panel-head" style={{ marginBottom: 6 }}>
+                            <h4 style={{ margin: 0 }}>
+                              {l.code}
+                              <span className="muted small"> · {(l.contenants || []).map((c) => (contenants[c.contenantId] ? contenants[c.contenantId].nom : '?')).join(', ')} · {ordres.length} tâche{ordres.length > 1 ? 's' : ''}</span>
+                            </h4>
+                            <button className="btn btn-ghost btn-sm" onClick={() => ouvrirLot(l.id)}>Ouvrir la cuve</button>
+                          </div>
+                          {ordres.map((o) => (
+                            <LigneOrdreTravail key={o.id} ordre={o} lot={l} produits={produits} contenants={contenants} afficherDate
+                              onValider={validerOuOuvrirOrdre}
+                              onModifier={(ord) => ouvrir('ordreTravail', { ordre: ord })}
+                              onSupprimer={supprimerOrdreTravail}
+                              onAnnuler={reouvrirOrdreTravail} />
+                          ))}
+                        </div>
+                      ))}
+                      {ordresParCuve.sansCuve.length > 0 && (
+                        <div className="ordre-groupe-cuve">
+                          <h4>Sans cuve</h4>
+                          {ordresParCuve.sansCuve.map((o) => (
+                            <LigneOrdreTravail key={o.id} ordre={o} lot={null} produits={produits} contenants={contenants} afficherDate
+                              onValider={validerOuOuvrirOrdre}
+                              onModifier={(ord) => ouvrir('ordreTravail', { ordre: ord })}
+                              onSupprimer={supprimerOrdreTravail}
+                              onAnnuler={reouvrirOrdreTravail} />
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )
                 )}
               </div>
             </>
