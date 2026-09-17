@@ -4330,9 +4330,11 @@ export default function CahierDeChai() {
     setLots((prev) => {
       const next = { ...prev };
       const nvLotSrc = { ...next[sourceLotId] };
-      nvLotSrc.contenants = nvLotSrc.contenants
-        .map((c) => (c.contenantId === opSrc.contenantSourceId ? { ...c, volume: volSrcApres } : c))
-        .filter((c) => c.volume > 0.001);
+      const dejaSrc = nvLotSrc.contenants.some((c) => c.contenantId === opSrc.contenantSourceId);
+      nvLotSrc.contenants = (dejaSrc
+        ? nvLotSrc.contenants.map((c) => (c.contenantId === opSrc.contenantSourceId ? { ...c, volume: volSrcApres } : c))
+        : [...nvLotSrc.contenants, { contenantId: opSrc.contenantSourceId, volume: volSrcApres }]
+      ).filter((c) => c.volume > 0.001);
       nvLotSrc.operations = nvLotSrc.operations.map((o) => (o.id === sourceOpId ? { ...o, volume: nouveauVolume } : o));
       nvLotSrc.statut = volumeLot(nvLotSrc) > 0.001 ? 'actif' : 'archive';
       next[sourceLotId] = nvLotSrc;
