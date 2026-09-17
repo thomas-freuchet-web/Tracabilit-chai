@@ -3707,6 +3707,33 @@ export default function CahierDeChai() {
   const [modale, setModale] = useState(null); // {type, payload}
   const ouvrir = (type, payload = {}) => setModale({ type, payload });
   const fermer = () => setModale(null);
+
+  /* ---------- Annuler la dernière action ---------- */
+  // Un seul niveau d'annulation (pas d'historique complet) : avant chaque
+  // action passant par une modale, on garde un instantané de toutes les
+  // collections persistées ; si l'action réussit, ce cliché devient
+  // "annulable" jusqu'à la prochaine action. Volontairement en mémoire
+  // seulement (pas persisté) — annuler après avoir rechargé la page ou
+  // changé d'appareil n'aurait plus de sens.
+  const [derniereAction, setDerniereAction] = useState(null); // {label, snapshot}
+  const capturerEtat = () => ({
+    domaine, lieux, contenants, cepages, parcelles, produits, lots, conditionnements, ordresTravail, programmations,
+  });
+  const avecUndo = (fn, label) => (...args) => {
+    const snapshot = capturerEtat();
+    const resultat = fn(...args);
+    if (resultat !== false) setDerniereAction({ label, snapshot });
+    return resultat;
+  };
+  const annulerDerniereAction = () => {
+    if (!derniereAction) return;
+    if (!window.confirm(`Annuler : ${derniereAction.label} ?`)) return;
+    const s = derniereAction.snapshot;
+    setDomaine(s.domaine); setLieux(s.lieux); setContenants(s.contenants); setCepages(s.cepages);
+    setParcelles(s.parcelles); setProduits(s.produits); setLots(s.lots); setConditionnements(s.conditionnements);
+    setOrdresTravail(s.ordresTravail); setProgrammations(s.programmations);
+    setDerniereAction(null);
+  };
   // Alertes température actives (programmation) — en mémoire seulement, pas
   // persistées : elles se recalculent à chaque relevé, inutile de les
   // synchroniser entre appareils.
@@ -6176,72 +6203,72 @@ export default function CahierDeChai() {
     switch (type) {
       case 'apport':
         return <ModaleApport parcelles={parcelles} cepages={cepages} contenants={contenants} lieux={lieux}
-          occupation={occupationParContenant} lots={lots} onValider={apporterVendange} onFermer={fermer} />;
+          occupation={occupationParContenant} lots={lots} onValider={avecUndo(apporterVendange, 'Apport de vendange')} onFermer={fermer} />;
       case 'transfert':
         return <ModaleTransfert lot={lots[payload.lotId]} contenants={contenants} lieux={lieux}
           occupation={occupationParContenant} lots={lots} parcelles={parcelles} cepages={cepages} initial={payload.initial}
-          onValider={avecOrdreLie(executerTransfert, payload._ordreId)} onFermer={fermer} />;
+          onValider={avecUndo(avecOrdreLie(executerTransfert, payload._ordreId), 'Transfert / assemblage')} onFermer={fermer} />;
       case 'ajoutProduit':
         return <ModaleAjoutProduit lot={lots[payload.lotId]} produits={produits} contenants={contenants} ajout={payload.ajout} initial={payload.initial}
-          onValider={payload.ajout ? (f) => majAjoutProduit(payload.lotId, payload.ajout.id, f) : avecOrdreLie(ajouterProduitAuLot, payload._ordreId)} onFermer={fermer} />;
+          onValider={avecUndo(payload.ajout ? (f) => majAjoutProduit(payload.lotId, payload.ajout.id, f) : avecOrdreLie(ajouterProduitAuLot, payload._ordreId), 'Ajout de produit')} onFermer={fermer} />;
       case 'analyse':
         return <ModaleAnalyse lot={lots[payload.lotId]} contenants={contenants} userId={user.uid} analyse={payload.analyse}
-          onValider={payload.analyse ? (f) => majAnalyse(payload.lotId, payload.analyse.id, f) : avecOrdreLie(enregistrerAnalyse, payload._ordreId)}
+          onValider={avecUndo(payload.analyse ? (f) => majAnalyse(payload.lotId, payload.analyse.id, f) : avecOrdreLie(enregistrerAnalyse, payload._ordreId), 'Analyse')}
           onRecommandations={(recommandations) => ajouterRecommandationsProgrammation(payload.lotId, recommandations)}
           onFermer={fermer} />;
       case 'controle':
         return <ModaleControle lot={lots[payload.lotId]} contenants={contenants} controle={payload.controle} initial={payload.initial}
-          onValider={payload.controle ? (f) => majControle(payload.lotId, payload.controle.id, f) : avecOrdreLie(enregistrerControle, payload._ordreId)} onFermer={fermer} />;
+          onValider={avecUndo(payload.controle ? (f) => majControle(payload.lotId, payload.controle.id, f) : avecOrdreLie(enregistrerControle, payload._ordreId), 'Relevé T° / densité')} onFermer={fermer} />;
       case 'travail':
         return <ModaleTravail lot={lots[payload.lotId]} contenants={contenants} travail={payload.travail} initial={payload.initial}
-          onValider={payload.travail ? (f) => majTravail(payload.lotId, payload.travail.id, f) : avecOrdreLie(enregistrerTravail, payload._ordreId)} onFermer={fermer} />;
+          onValider={avecUndo(payload.travail ? (f) => majTravail(payload.lotId, payload.travail.id, f) : avecOrdreLie(enregistrerTravail, payload._ordreId), 'Travail de cave')} onFermer={fermer} />;
       case 'perte':
         return <ModalePerte lot={lots[payload.lotId]} contenants={contenants} perte={payload.perte} initial={payload.initial}
-          onValider={payload.perte ? (f) => majPerte(payload.lotId, payload.perte.id, f) : avecOrdreLie(enregistrerPerte, payload._ordreId)} onFermer={fermer} />;
+          onValider={avecUndo(payload.perte ? (f) => majPerte(payload.lotId, payload.perte.id, f) : avecOrdreLie(enregistrerPerte, payload._ordreId), 'Sortie de volume')} onFermer={fermer} />;
       case 'ordreTravail':
         return <ModaleOrdreTravail lots={lotsActifsTries} contenants={contenants} produits={produits} ordre={payload.ordre} dateInitiale={payload.dateInitiale}
-          onValider={payload.ordre ? (f) => modifierOrdreTravail(payload.ordre.id, f) : ajouterOrdreTravail} onFermer={fermer} />;
+          onValider={avecUndo(payload.ordre ? (f) => modifierOrdreTravail(payload.ordre.id, f) : ajouterOrdreTravail, 'Ordre de travail')} onFermer={fermer} />;
       case 'manipulation':
         return <ModaleManipulation lot={lots[payload.lotId]} contenants={contenants} typeInitial={payload.manipType}
           manipulation={payload.manipulation}
-          onValider={payload.manipulation ? (f) => majManipulation(payload.lotId, payload.manipulation.id, f) : enregistrerManipulation}
+          onValider={avecUndo(payload.manipulation ? (f) => majManipulation(payload.lotId, payload.manipulation.id, f) : enregistrerManipulation, 'Registre — manipulation')}
           onFermer={fermer} />;
       case 'mise':
         return <ModaleMise lot={lots[payload.lotId]} contenants={contenants} conditionnements={conditionnements}
-          parcelles={parcelles} cepages={cepages} onValider={mettreEnBouteille} onFermer={fermer} />;
+          parcelles={parcelles} cepages={cepages} onValider={avecUndo(mettreEnBouteille, 'Mise en bouteille')} onFermer={fermer} />;
       case 'editLot':
-        return <ModaleEditLot lot={lots[payload.lotId]} contenants={contenants} onValider={(f) => majLot(payload.lotId, f)} onFermer={fermer} />;
+        return <ModaleEditLot lot={lots[payload.lotId]} contenants={contenants} onValider={avecUndo((f) => majLot(payload.lotId, f), 'Modification du lot')} onFermer={fermer} />;
       case 'editApport':
         return <ModaleEditApport op={(lots[payload.lotId].operations || []).find((o) => o.id === payload.opId)}
-          contenants={contenants} parcelles={parcelles} onValider={(f) => majApport(payload.lotId, payload.opId, f)} onFermer={fermer} />;
+          contenants={contenants} parcelles={parcelles} onValider={avecUndo((f) => majApport(payload.lotId, payload.opId, f), "Correction d'apport")} onFermer={fermer} />;
       case 'editMouvement':
         return <ModaleEditMouvement op={payload.op} contenants={contenants}
-          onValider={(f) => majMouvement(payload.lotId, payload.op.id, f)} onFermer={fermer} />;
+          onValider={avecUndo((f) => majMouvement(payload.lotId, payload.op.id, f), 'Correction de transfert')} onFermer={fermer} />;
       case 'lieu':
-        return <ModaleLieu lieu={payload.lieu} onValider={payload.lieu ? (f) => majLieu(payload.lieu.id, f) : ajouterLieu} onFermer={fermer} />;
+        return <ModaleLieu lieu={payload.lieu} onValider={avecUndo(payload.lieu ? (f) => majLieu(payload.lieu.id, f) : ajouterLieu, 'Lieu')} onFermer={fermer} />;
       case 'contenants':
-        return <ModaleContenants lieux={lieux} lieuInitial={payload.lieuId} onValider={ajouterContenants} onFermer={fermer} />;
+        return <ModaleContenants lieux={lieux} lieuInitial={payload.lieuId} onValider={avecUndo(ajouterContenants, 'Ajout de contenants')} onFermer={fermer} />;
       case 'editContenant':
-        return <ModaleEditContenant contenant={contenants[payload.contenantId]} onValider={(f) => majContenant(payload.contenantId, f)} onFermer={fermer} />;
+        return <ModaleEditContenant contenant={contenants[payload.contenantId]} onValider={avecUndo((f) => majContenant(payload.contenantId, f), 'Modification de contenant')} onFermer={fermer} />;
       case 'cepage':
-        return <ModaleCepage cepage={payload.cepage} onValider={payload.cepage ? (f) => majCepage(payload.cepage.id, f) : ajouterCepage} onFermer={fermer} />;
+        return <ModaleCepage cepage={payload.cepage} onValider={avecUndo(payload.cepage ? (f) => majCepage(payload.cepage.id, f) : ajouterCepage, 'Cépage')} onFermer={fermer} />;
       case 'parcelles':
-        return <ModaleParcelles cepages={cepages} onValider={ajouterParcelles} onFermer={fermer} />;
+        return <ModaleParcelles cepages={cepages} onValider={avecUndo(ajouterParcelles, 'Ajout de parcelles')} onFermer={fermer} />;
       case 'editParcelle':
-        return <ModaleEditParcelle parcelle={payload.parcelle} cepages={cepages} onValider={(f) => majParcelle(payload.parcelle.id, f)} onFermer={fermer} />;
+        return <ModaleEditParcelle parcelle={payload.parcelle} cepages={cepages} onValider={avecUndo((f) => majParcelle(payload.parcelle.id, f), 'Modification de parcelle')} onFermer={fermer} />;
       case 'importIA':
         return <ModaleImportIA scope={payload.scope} onImporter={importerReferentielIA} onFermer={fermer} />;
       case 'produit':
-        return <ModaleProduit produit={payload.produit} onValider={payload.produit ? (f) => majProduit(payload.produit.id, f) : ajouterProduit} onFermer={fermer} />;
+        return <ModaleProduit produit={payload.produit} onValider={avecUndo(payload.produit ? (f) => majProduit(payload.produit.id, f) : ajouterProduit, 'Produit œnologique')} onFermer={fermer} />;
       case 'programmation':
         return <ModaleProgrammation programmation={payload.programmation} produits={produits}
-          onValider={payload.programmation ? (f) => majProgrammation(payload.programmation.id, f) : ajouterProgrammation} onFermer={fermer} />;
+          onValider={avecUndo(payload.programmation ? (f) => majProgrammation(payload.programmation.id, f) : ajouterProgrammation, 'Programmation')} onFermer={fermer} />;
       case 'entreeStock':
         return <ModaleEntreeStock produit={produits[payload.produitId]} mouvement={payload.mouvement}
-          onValider={payload.mouvement ? (f) => majEntreeStock(payload.produitId, payload.mouvement.id, f) : entrerStock} onFermer={fermer} />;
+          onValider={avecUndo(payload.mouvement ? (f) => majEntreeStock(payload.produitId, payload.mouvement.id, f) : entrerStock, 'Entrée de stock')} onFermer={fermer} />;
       case 'bulletinMulti':
         return <ModaleImportBulletinMulti lots={lotsActifs} contenants={contenants} userId={user.uid}
-          onValider={(echantillons) => enregistrerAnalysesMulti(echantillons)} onFermer={fermer} />;
+          onValider={avecUndo((echantillons) => enregistrerAnalysesMulti(echantillons), "Import d'analyses")} onFermer={fermer} />;
       case 'importBonLivraison':
         return <ModaleImportBonLivraison produits={produits} onImporter={importerProduitsIA} onFermer={fermer} />;
       case 'produitDetail':
@@ -6291,6 +6318,11 @@ export default function CahierDeChai() {
           <button className="btn btn-primary" onClick={() => ouvrir('apport')}>+ Apport de vendange</button>
           <button className="btn btn-ghost light" onClick={() => ouvrir('bulletinMulti')}>+ Analyser un bulletin</button>
           <button className="btn btn-ghost light" onClick={() => { setVue('programmation'); setLotOuvert(null); }}>+ Programmation</button>
+          {derniereAction && (
+            <button className="btn btn-outline light" title={`Annuler : ${derniereAction.label}`} onClick={annulerDerniereAction}>
+              ↺ Annuler : {derniereAction.label}
+            </button>
+          )}
           <span className="muted small sync-status">
             {syncEtat.statut === 'en_cours' ? 'Synchronisation…'
               : syncEtat.statut === 'horsligne' ? 'Hors ligne — données locales'
