@@ -2019,7 +2019,7 @@ function ModalePerte({ lot, contenants, onValider, onFermer, perte, initial }) {
   );
 }
 
-function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, ordre, dateInitiale }) {
+function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, ordre, dateInitiale, lotIdInitial }) {
   // Une tâche "ajout de produit" peut planifier plusieurs produits à la fois
   // (comme le vrai formulaire d'ajout) — chacun avec son propre produit,
   // dose et lot fournisseur. Compatible avec les tâches déjà enregistrées
@@ -2041,7 +2041,7 @@ function ModaleOrdreTravail({ lots, contenants, produits, onValider, onFermer, o
     debitPompe: ordre.details.debitPompe || '', nbPassages: ordre.details.nbPassages || '1',
     notes: ordre.notes || '',
   } : {
-    date: dateInitiale || today(), type: 'libre', titre: '', lotId: '',
+    date: dateInitiale || today(), type: 'libre', titre: '', lotId: lotIdInitial || '',
     lignes: [ligneVideOrdre()],
     contenantDestId: '', volume: '', action: '', motif: '', moment: '',
     pression: '', dureeRef: '', volumeRef: '',
@@ -3704,6 +3704,8 @@ export default function CahierDeChai() {
   const [triEntreesVendange, setTriEntreesVendange] = useState('date'); // date | parcelle
   const [dateOrdre, setDateOrdre] = useState(() => today()); // jour affiché dans l'onglet Ordre de travail
   const [modeOrdre, setModeOrdre] = useState('jour'); // jour | cuve — vue de l'onglet Ordre de travail
+  const [filtreCuveOrdre, setFiltreCuveOrdre] = useState(null); // lotId ou null — filtre la vue "Par cuve" sur une seule cuve
+  const voirOrdresDeLaCuve = (lotId) => { setModeOrdre('cuve'); setFiltreCuveOrdre(lotId); setVue('ordre'); setLotOuvert(null); };
 
   /* ---------- Modales ---------- */
   const [modale, setModale] = useState(null); // {type, payload}
@@ -6254,7 +6256,7 @@ export default function CahierDeChai() {
         return <ModalePerte lot={lots[payload.lotId]} contenants={contenants} perte={payload.perte} initial={payload.initial}
           onValider={avecUndo(payload.perte ? (f) => majPerte(payload.lotId, payload.perte.id, f) : avecOrdreLie(enregistrerPerte, payload._ordreId), 'Sortie de volume')} onFermer={fermer} />;
       case 'ordreTravail':
-        return <ModaleOrdreTravail lots={lotsActifsTries} contenants={contenants} produits={produits} ordre={payload.ordre} dateInitiale={payload.dateInitiale}
+        return <ModaleOrdreTravail lots={lotsActifsTries} contenants={contenants} produits={produits} ordre={payload.ordre} dateInitiale={payload.dateInitiale} lotIdInitial={payload.lotIdInitial}
           onValider={avecUndo(payload.ordre ? (f) => modifierOrdreTravail(payload.ordre.id, f) : ajouterOrdreTravail, 'Ordre de travail')} onFermer={fermer} />;
       case 'manipulation':
         return <ModaleManipulation lot={lots[payload.lotId]} contenants={contenants} typeInitial={payload.manipType}
@@ -6570,8 +6572,14 @@ export default function CahierDeChai() {
                         {dateOrdre !== today() && <button className="btn btn-ghost btn-sm" onClick={() => setDateOrdre(today())}>Aujourd'hui</button>}
                       </>
                     )}
+                    {modeOrdre === 'cuve' && filtreCuveOrdre && lots[filtreCuveOrdre] && (
+                      <span className="chip">
+                        {lots[filtreCuveOrdre].code}
+                        <button className="btn btn-ghost btn-sm" style={{ marginLeft: 6 }} onClick={() => setFiltreCuveOrdre(null)} title="Voir toutes les cuves">✕</button>
+                      </span>
+                    )}
                   </div>
-                  <button className="btn btn-primary btn-sm" onClick={() => ouvrir('ordreTravail', { dateInitiale: dateOrdre })}>+ Ajouter une tâche</button>
+                  <button className="btn btn-primary btn-sm" onClick={() => ouvrir('ordreTravail', { dateInitiale: dateOrdre, lotIdInitial: modeOrdre === 'cuve' ? filtreCuveOrdre : null })}>+ Ajouter une tâche</button>
                 </div>
                 {modeOrdre === 'jour' ? (
                   ordresDateAffichee.length === 0 ? (
@@ -6586,11 +6594,12 @@ export default function CahierDeChai() {
                     ))
                   )
                 ) : (
-                  ordresParCuve.groupes.length === 0 && ordresParCuve.sansCuve.length === 0 ? (
-                    <EmptyState titre="Aucune tâche en attente" texte="Rien à faire sur aucune cuve pour l'instant." />
+                  (filtreCuveOrdre ? ordresParCuve.groupes.filter((g) => g.lot.id === filtreCuveOrdre) : ordresParCuve.groupes).length === 0
+                    && (filtreCuveOrdre ? [] : ordresParCuve.sansCuve).length === 0 ? (
+                    <EmptyState titre="Aucune tâche en attente" texte={filtreCuveOrdre ? "Rien à faire sur cette cuve pour l'instant." : 'Rien à faire sur aucune cuve pour l\'instant.'} />
                   ) : (
                     <>
-                      {ordresParCuve.groupes.map(({ lot: l, jours }) => {
+                      {(filtreCuveOrdre ? ordresParCuve.groupes.filter((g) => g.lot.id === filtreCuveOrdre) : ordresParCuve.groupes).map(({ lot: l, jours }) => {
                         const nbTaches = jours.reduce((n, j) => n + j.ordres.length, 0);
                         const nomsContenants = (l.contenants || []).map((c) => (contenants[c.contenantId] ? contenants[c.contenantId].nom : '?')).join(', ');
                         return (
@@ -6617,7 +6626,7 @@ export default function CahierDeChai() {
                           </div>
                         );
                       })}
-                      {ordresParCuve.sansCuve.length > 0 && (
+                      {!filtreCuveOrdre && ordresParCuve.sansCuve.length > 0 && (
                         <div className="ordre-groupe-cuve">
                           <h4>Sans cuve</h4>
                           {ordresParCuve.sansCuve.map(({ date, ordres }) => (
@@ -6819,6 +6828,7 @@ export default function CahierDeChai() {
                   <button className="btn btn-outline btn-sm" onClick={() => ouvrir('analyse', { lotId: lot.id })}>+ Analyse</button>
                   <button className="btn btn-outline btn-sm" onClick={() => ouvrir('travail', { lotId: lot.id })}>+ Travail</button>
                   <button className="btn btn-outline btn-sm" onClick={() => ouvrir('ajoutProduit', { lotId: lot.id })}>+ Produit</button>
+                  <button className="btn btn-outline btn-sm" onClick={() => voirOrdresDeLaCuve(lot.id)}>Ordre de travail</button>
                   <button className="btn btn-outline btn-sm" onClick={() => ouvrir('transfert', { lotId: lot.id })}>Transfert / assemblage</button>
                   <button className="btn btn-outline btn-sm" onClick={() => ouvrir('manipulation', { lotId: lot.id })}>Registre</button>
                   <button className="btn btn-outline btn-sm" onClick={() => ouvrir('perte', { lotId: lot.id })}>Sortie de volume</button>
