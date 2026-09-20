@@ -619,15 +619,26 @@ function LigneOrdreTravail({ ordre, lot, produits, contenants, onValider, onModi
       const dureeO2 = calculerDureeO2(d.dureeRef, d.volumeRef, lot ? volumeLot(lot) : 0);
       detail += ` (${dureeO2 !== null ? `${dureeO2} min` : `${d.dureeRef} min / ${d.volumeRef} hL`}${d.pression ? ` à ${d.pression} bar` : ''})`;
     }
-    if (d.action === ACTION_REMONTAGE && d.debitPompe) {
-      const dureeRemontage = calculerDureeRemontage(d.volumeRemontage, d.debitPompe, d.nbPassages || '1');
-      detail += ` (${d.debitPompe} hL/h${dureeRemontage !== null ? ` · ${dureeRemontage} min` : ''}${Number(d.nbPassages) > 1 ? ` · ${d.nbPassages} passages` : ''}${d.volumeRemontage ? ` · ${d.volumeRemontage} hL` : ''})`;
+    if (d.action === ACTION_REMONTAGE) {
+      if (d.debitPompe) {
+        const dureeRemontage = calculerDureeRemontage(d.volumeRemontage, d.debitPompe, d.nbPassages || '1');
+        detail += ` (${d.debitPompe} hL/h${dureeRemontage !== null ? ` · ${dureeRemontage} min` : ''}${Number(d.nbPassages) > 1 ? ` · ${d.nbPassages} passages` : ''}${d.volumeRemontage ? ` · ${d.volumeRemontage} hL` : ''})`;
+      } else if (d.volumeRemontage) {
+        detail += ` (${d.volumeRemontage} hL — vitesse de pompe à choisir)`;
+      }
     }
   } else if (ordre.type === 'perte' && d.motif) {
     detail = d.motif;
   } else if (ordre.type === 'controle' && d.moment) {
     detail = d.moment === 'matin' ? 'Matin' : d.moment === 'soir' ? 'Soir' : 'Contrôle supplémentaire';
   }
+  // Densité/température du relevé qui a déclenché la tâche (programmation) —
+  // pour que la personne qui l'exécute au chai voie où en est la cuve sans
+  // avoir à rouvrir sa fiche.
+  const contexteReleve = [
+    d.densite !== undefined && d.densite !== null && d.densite !== '' ? `densité ${d.densite}` : null,
+    d.temperature !== undefined && d.temperature !== null && d.temperature !== '' ? `${d.temperature} °C` : null,
+  ].filter(Boolean).join(' · ');
   const nomsContenants = lot ? (lot.contenants || []).map((c) => (contenants[c.contenantId] ? contenants[c.contenantId].nom : '?')).join(', ') : '';
   return (
     <div className={`ordre-ligne ${ordre.fait ? 'fait' : ''}`}>
@@ -642,6 +653,7 @@ function LigneOrdreTravail({ ordre, lot, produits, contenants, onValider, onModi
           {afficherDate && <> · {ordre.date}</>}
           {lot && <> · {lot.code}{nomsContenants ? ` (${nomsContenants})` : ''}</>}
           {detail && <> · {detail}</>}
+          {contexteReleve && <> · {contexteReleve}</>}
           {ordre.fait && ordre.faitLe && <> · fait à {heureLocale(ordre.faitLe)}</>}
         </div>
         {ordre.notes && <div className="muted small">{ordre.notes}</div>}
@@ -5362,12 +5374,17 @@ export default function CahierDeChai() {
   // Crée dans l'ordre de travail la tâche correspondant à un événement de
   // programmation déclenché (délestage, ajout d'O2, ajout de produit) — même
   // structure "details" que la planification manuelle de ces mêmes tâches.
-  const creerTacheDepuisEvenement = (lotId, evenement) => {
+  // `point` (densité/température du relevé qui a déclenché l'événement, si
+  // connu) est reporté sur la tâche pour que la personne qui l'exécute au
+  // chai voie tout de suite dans quel état était la cuve, sans avoir à
+  // rouvrir sa fiche.
+  const creerTacheDepuisEvenement = (lotId, evenement, point) => {
     const lot = lots[lotId];
     const volume = volumeLot(lot);
     const titrePrefixe = `Programmation — ${lot.code}`;
+    const contexte = point ? { densite: point.densite ?? '', temperature: point.temperature ?? '' } : {};
     if (evenement.type === 'delestage') {
-      ajouterOrdreTravail({ date: today(), type: 'travail', titre: `${titrePrefixe} : Délestage`, lotId, details: { action: 'Délestage' } });
+      ajouterOrdreTravail({ date: today(), type: 'travail', titre: `${titrePrefixe} : Délestage`, lotId, details: { action: 'Délestage', ...contexte } });
     } else if (evenement.type === 'o2') {
       ajouterOrdreTravail({
         date: today(), type: 'travail', titre: `${titrePrefixe} : Ajout d'O2`, lotId,
@@ -5376,6 +5393,7 @@ export default function CahierDeChai() {
           pression: evenement.pression !== null && evenement.pression !== undefined ? String(evenement.pression) : '',
           dureeRef: evenement.dureeRef !== null && evenement.dureeRef !== undefined ? String(evenement.dureeRef) : '',
           volumeRef: evenement.volumeRef !== null && evenement.volumeRef !== undefined ? String(evenement.volumeRef) : '',
+          ...contexte,
         },
       });
     } else if (evenement.type === 'produit') {
@@ -5385,7 +5403,7 @@ export default function CahierDeChai() {
         : null;
       ajouterOrdreTravail({
         date: today(), type: 'ajout', titre: `${titrePrefixe} : ${evenement.produitNom}`, lotId,
-        details: { lignes: produit ? [{ produitId: produit.id, quantite: quantite !== null ? String(quantite) : '', numeroLotFournisseur: '' }] : [] },
+        details: { lignes: produit ? [{ produitId: produit.id, quantite: quantite !== null ? String(quantite) : '', numeroLotFournisseur: '' }] : [], ...contexte },
         notes: produit ? '' : `Produit "${evenement.produitNom}" introuvable dans le référentiel — ajoute-le d'abord dans Produits œnologiques.`,
       });
     }
@@ -5396,16 +5414,18 @@ export default function CahierDeChai() {
   // planification manuelle en plusieurs fois), le volume total étant divisé
   // par 3. Pas de débit de pompe connu à l'avance (ça dépend de la pompe
   // dispo ce jour-là), donc chaque tâche pré-remplit juste son volume ; le
-  // reste (vitesse) se choisit en ouvrant la tâche.
-  const creerTacheRemontage = (lotId, coefficient) => {
+  // reste (vitesse) se choisit en ouvrant la tâche. `point` : voir
+  // creerTacheDepuisEvenement ci-dessus.
+  const creerTacheRemontage = (lotId, coefficient, point) => {
     const lot = lots[lotId];
     const volumeTotal = round2(coefficient * volumeLot(lot));
     const n = 3;
     const volumePassage = round2(volumeTotal / n);
+    const contexte = point ? { densite: point.densite ?? '', temperature: point.temperature ?? '' } : {};
     for (let i = 1; i <= n; i++) {
       ajouterOrdreTravail({
         date: today(), type: 'travail', titre: `Programmation — ${lot.code} : Remontage (${i}/${n})`, lotId,
-        details: { action: ACTION_REMONTAGE, coefficientVolume: '', volumeRemontage: String(volumePassage), debitPompe: '', nbPassages: '1' },
+        details: { action: ACTION_REMONTAGE, coefficientVolume: '', volumeRemontage: String(volumePassage), debitPompe: '', nbPassages: '1', ...contexte },
       });
     }
   };
@@ -5464,7 +5484,7 @@ export default function CahierDeChai() {
       if (coefficient !== null && lot.programmation.remontageCreeLe !== point.date) {
         nouveauProgrammation = { ...lot.programmation, remontageCreeLe: point.date };
         if (lot.programmation.mode === 'auto') {
-          creerTacheRemontage(lotId, coefficient);
+          creerTacheRemontage(lotId, coefficient, point);
         } else {
           nouveauProgrammation.recommandationsEnAttente = [...(nouveauProgrammation.recommandationsEnAttente || []), `remontage:${point.date}`];
         }
@@ -5474,7 +5494,7 @@ export default function CahierDeChai() {
     const evenements = [...(prog ? prog.evenements || [] : []), ...(lot.programmation.evenementsSupplementaires || [])];
     const aDeclencher = evenementsADeclencher(evenements, lot.programmation.evenementsDeclenches, point.densite, lot.programmation.densiteActivation);
     if (aDeclencher.length) {
-      if (lot.programmation.mode === 'auto') aDeclencher.forEach((e) => creerTacheDepuisEvenement(lotId, e));
+      if (lot.programmation.mode === 'auto') aDeclencher.forEach((e) => creerTacheDepuisEvenement(lotId, e, point));
       const base = nouveauProgrammation || lot.programmation;
       nouveauProgrammation = {
         ...base,
@@ -5493,13 +5513,13 @@ export default function CahierDeChai() {
   const confirmerRecommandation = (lotId, evenementId) => {
     const lot = lots[lotId];
     const prog = lot.programmation.programmationId ? programmations[lot.programmation.programmationId] : null;
+    const point = dernierPointDensite(lot);
     if (evenementId.startsWith('remontage:')) {
-      const point = dernierPointDensite(lot);
       const coefficient = prog && point ? coefficientRemontage(prog, point.densite) : null;
-      if (coefficient !== null) creerTacheRemontage(lotId, coefficient);
+      if (coefficient !== null) creerTacheRemontage(lotId, coefficient, point);
     } else {
       const evenement = [...(prog ? prog.evenements || [] : []), ...(lot.programmation.evenementsSupplementaires || [])].find((e) => e.id === evenementId);
-      if (evenement) creerTacheDepuisEvenement(lotId, evenement);
+      if (evenement) creerTacheDepuisEvenement(lotId, evenement, point);
     }
     majLot(lotId, { programmation: { ...lot.programmation, recommandationsEnAttente: lot.programmation.recommandationsEnAttente.filter((id) => id !== evenementId) } });
   };
