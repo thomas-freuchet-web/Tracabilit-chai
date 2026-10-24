@@ -4858,6 +4858,8 @@ export default function CahierDeChai() {
     const lot = lots[form.lotId];
     const ligne = (lot.contenants || []).find((c) => c.contenantId === form.contenantId);
     if (!ligne || ligne.volume < v) { alert('Volume insuffisant dans ce contenant'); return false; }
+    const nomContenantSource = contenants[form.contenantId] ? contenants[form.contenantId].nom : form.contenantId;
+    let lotApresPerte = null;
     setLots((prev) => {
       const l = { ...prev[form.lotId] };
       l.contenants = l.contenants
@@ -4869,8 +4871,20 @@ export default function CahierDeChai() {
         poidsKg: form.poidsKg ? Number(form.poidsKg) : null, notes: form.notes || '', auteur: user.id,
       }];
       if (volumeLot(l) <= 0.001) l.statut = 'archive';
+      lotApresPerte = l;
       return { ...prev, [form.lotId]: l };
     });
+    // La cuve est-elle intégralement vidée par cette sortie (dernière étape
+    // d'un écoulage/décuvage, typiquement) ? Même récap PDF automatique que
+    // pour un transfert qui viderait la cuve (voir executerTransfert).
+    if (lotApresPerte && volumeLot(lotApresPerte) <= 0.001) {
+      genererPdfCuve(lotApresPerte, contenants, parcelles, cepages, {
+        titre: `Récap de cuve vidée — ${nomContenantSource}`,
+        sousTitre: `Vidée le ${form.date} par ${form.motif || 'sortie de volume'}`,
+      })
+        .then((blob) => telechargerBlob(blob, `cuve-videe-${nomContenantSource.replace(/[^\w-]/g, '')}-${form.date}.pdf`))
+        .catch((e) => alert("Le PDF de la cuve vidée n'a pas pu être généré : " + (e && e.message ? e.message : 'erreur inconnue')));
+    }
     return true;
   };
 
