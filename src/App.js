@@ -857,6 +857,143 @@ function ModaleTransfert({ lot, contenants, lieux, occupation, lots, parcelles, 
   );
 }
 
+/* Fin de fermentation rouge en trois étapes, enchaînées dans une seule
+   fenêtre mais validées une à une (chacune via l'action réelle déjà en
+   place — executerTransfert/enregistrerPerte — pour ne pas dupliquer leur
+   logique de mélange/répartition) : écoulage du jus de goutte, décuvage du
+   marc + presse, puis sortie de volume du marc. Chaque étape peut être
+   passée sans rien enregistrer (ex. décuvage fait un autre jour). */
+function ModaleEcoulage({ lot, contenants, lieux, occupation, lots, onEcoulage, onDecuvage, onMarc, onFermer }) {
+  const [etape, setEtape] = useState(1);
+  const [contenantSourceId, setContenantSourceId] = useState((lot.contenants[0] || {}).contenantId || '');
+  const [f1, setF1] = useState({ date: today(), contenantDestId: '', volume: '', note: '' });
+  const [f2, setF2] = useState({ date: today(), contenantDestId: '', volume: '', note: '' });
+  const [f3, setF3] = useState({ date: today(), volume: '', poidsKg: '', note: '' });
+
+  const ligneSrc = lot.contenants.find((c) => c.contenantId === contenantSourceId);
+
+  const SelectVers = ({ value, onChange }) => (
+    <select value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="">— Sélectionner —</option>
+      {Object.values(lieux).map((lieu) => (
+        <optgroup key={lieu.id} label={lieu.nom}>
+          {Object.values(contenants).filter((c) => c.lieuId === lieu.id && c.id !== contenantSourceId)
+            .sort((a, b) => a.nom.localeCompare(b.nom, undefined, { numeric: true }))
+            .map((c) => {
+              const o = occupation[c.id];
+              const lo = o ? lots[o.lotId] : null;
+              return (
+                <option key={c.id} value={c.id}>
+                  {c.nom}{c.capacite ? ` — ${c.capacite} hL` : ''}{lo ? ` · ${lo.code} (${o.volume} hL)` : ' · vide'}
+                </option>
+              );
+            })}
+        </optgroup>
+      ))}
+    </select>
+  );
+
+  const validerEcoulage = () => {
+    const v = Number(f1.volume);
+    if (!f1.contenantDestId || !v || v <= 0) { alert('Cuve destination et volume sont obligatoires'); return; }
+    const ok = onEcoulage({
+      lotSourceId: lot.id, contenantSourceId, contenantDestId: f1.contenantDestId,
+      date: f1.date, motif: 'Écoulage', note: f1.note, volume: f1.volume,
+    });
+    if (ok) setEtape(2);
+  };
+  const validerDecuvage = () => {
+    const v = Number(f2.volume);
+    if (!f2.contenantDestId || !v || v <= 0) { alert('Cuve destination et volume sont obligatoires'); return; }
+    const ok = onDecuvage({
+      lotSourceId: lot.id, contenantSourceId, contenantDestId: f2.contenantDestId,
+      date: f2.date, motif: 'Décuvage', note: f2.note, volume: f2.volume,
+    });
+    if (ok) setEtape(3);
+  };
+  const validerMarc = () => {
+    const v = Number(f3.volume);
+    if (!v || v <= 0) { alert('Indique le volume correspondant à la sortie de marc'); return; }
+    const ok = onMarc({
+      lotId: lot.id, contenantId: contenantSourceId, date: f3.date,
+      volume: f3.volume, poidsKg: f3.poidsKg, motif: 'Marc / rafle', notes: f3.note,
+    });
+    if (ok) onFermer();
+  };
+
+  return (
+    <Modal title="Écoulage" subtitle={`Lot ${lot.code} — étape ${etape}/3`} onClose={onFermer}>
+      <Field label="Contenant à vider" hint={etape > 1 ? 'Fixé à la première étape' : undefined}>
+        <select value={contenantSourceId} onChange={(e) => setContenantSourceId(e.target.value)} disabled={etape > 1}>
+          {lot.contenants.map((c) => (
+            <option key={c.contenantId} value={c.contenantId}>
+              {contenants[c.contenantId] ? contenants[c.contenantId].nom : '?'} — {c.volume} hL disponibles
+            </option>
+          ))}
+        </select>
+      </Field>
+
+      {etape === 1 && (
+        <>
+          <h4 style={{ margin: '14px 0 4px' }}>1. Écoulage — jus de goutte</h4>
+          <div className="field-grid">
+            <Field label="Date"><input type="date" value={f1.date} onChange={(e) => setF1((p) => ({ ...p, date: e.target.value }))} /></Field>
+            <Field label="Volume (hL)" hint={ligneSrc ? `Disponible : ${ligneSrc.volume} hL` : ''}>
+              <input type="number" step="0.1" value={f1.volume} onChange={(e) => setF1((p) => ({ ...p, volume: e.target.value }))} />
+            </Field>
+          </div>
+          <Field label="Vers"><SelectVers value={f1.contenantDestId} onChange={(v) => setF1((p) => ({ ...p, contenantDestId: v }))} /></Field>
+          <Field label="Note" hint="Optionnel"><input type="text" value={f1.note} onChange={(e) => setF1((p) => ({ ...p, note: e.target.value }))} /></Field>
+          <div className="form-actions">
+            <button className="btn btn-primary" onClick={validerEcoulage}>Valider l'écoulage →</button>
+            <button className="btn btn-outline" onClick={() => setEtape(2)}>Passer cette étape</button>
+            <button className="btn btn-ghost" onClick={onFermer}>Fermer</button>
+          </div>
+        </>
+      )}
+
+      {etape === 2 && (
+        <>
+          <h4 style={{ margin: '14px 0 4px' }}>2. Décuvage — marc et presse</h4>
+          <div className="field-grid">
+            <Field label="Date"><input type="date" value={f2.date} onChange={(e) => setF2((p) => ({ ...p, date: e.target.value }))} /></Field>
+            <Field label="Volume (hL)" hint={ligneSrc ? `Disponible : ${ligneSrc.volume} hL` : ''}>
+              <input type="number" step="0.1" value={f2.volume} onChange={(e) => setF2((p) => ({ ...p, volume: e.target.value }))} />
+            </Field>
+          </div>
+          <Field label="Vers"><SelectVers value={f2.contenantDestId} onChange={(v) => setF2((p) => ({ ...p, contenantDestId: v }))} /></Field>
+          <Field label="Note" hint="Optionnel"><input type="text" value={f2.note} onChange={(e) => setF2((p) => ({ ...p, note: e.target.value }))} /></Field>
+          <div className="form-actions">
+            <button className="btn btn-primary" onClick={validerDecuvage}>Valider le décuvage →</button>
+            <button className="btn btn-outline" onClick={() => setEtape(3)}>Passer cette étape</button>
+            <button className="btn btn-ghost" onClick={onFermer}>Fermer</button>
+          </div>
+        </>
+      )}
+
+      {etape === 3 && (
+        <>
+          <h4 style={{ margin: '14px 0 4px' }}>3. Sortie de volume — marc</h4>
+          <div className="field-grid">
+            <Field label="Date"><input type="date" value={f3.date} onChange={(e) => setF3((p) => ({ ...p, date: e.target.value }))} /></Field>
+            <Field label="Volume (hL)" hint={ligneSrc ? `Disponible : ${ligneSrc.volume} hL` : ''}>
+              <input type="number" step="0.01" value={f3.volume} onChange={(e) => setF3((p) => ({ ...p, volume: e.target.value }))} />
+            </Field>
+          </div>
+          <Field label="Poids (kg)" hint="Optionnel — le marc se pèse souvent plus facilement qu'il ne se mesure en volume">
+            <input type="number" step="0.1" value={f3.poidsKg} onChange={(e) => setF3((p) => ({ ...p, poidsKg: e.target.value }))} />
+          </Field>
+          <Field label="Note" hint="Optionnel"><input type="text" value={f3.note} onChange={(e) => setF3((p) => ({ ...p, note: e.target.value }))} /></Field>
+          <div className="form-actions">
+            <button className="btn btn-primary" onClick={validerMarc}>Enregistrer la sortie de marc</button>
+            <button className="btn btn-outline" onClick={onFermer}>Terminer sans marc</button>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
 function ModaleAjoutProduit(props) {
   return props.ajout ? <ModaleAjoutProduitEdition {...props} /> : <ModaleAjoutProduitCreation {...props} />;
 }
@@ -6258,6 +6395,13 @@ export default function CahierDeChai() {
         return <ModaleTransfert lot={lots[payload.lotId]} contenants={contenants} lieux={lieux}
           occupation={occupationParContenant} lots={lots} parcelles={parcelles} cepages={cepages} initial={payload.initial}
           onValider={avecUndo(avecOrdreLie(executerTransfert, payload._ordreId), 'Transfert / assemblage')} onFermer={fermer} />;
+      case 'ecoulage':
+        return <ModaleEcoulage lot={lots[payload.lotId]} contenants={contenants} lieux={lieux}
+          occupation={occupationParContenant} lots={lots}
+          onEcoulage={avecUndo(executerTransfert, 'Écoulage')}
+          onDecuvage={avecUndo(executerTransfert, 'Décuvage')}
+          onMarc={avecUndo(enregistrerPerte, 'Sortie de marc')}
+          onFermer={fermer} />;
       case 'ajoutProduit':
         return <ModaleAjoutProduit lot={lots[payload.lotId]} produits={produits} contenants={contenants} ajout={payload.ajout} initial={payload.initial}
           onValider={avecUndo(payload.ajout ? (f) => majAjoutProduit(payload.lotId, payload.ajout.id, f) : avecOrdreLie(ajouterProduitAuLot, payload._ordreId), 'Ajout de produit')} onFermer={fermer} />;
@@ -6850,6 +6994,7 @@ export default function CahierDeChai() {
                   <button className="btn btn-outline btn-sm" onClick={() => ouvrir('ajoutProduit', { lotId: lot.id })}>+ Produit</button>
                   <button className="btn btn-outline btn-sm" onClick={() => voirOrdresDeLaCuve(lot.id)}>Ordre de travail</button>
                   <button className="btn btn-outline btn-sm" onClick={() => ouvrir('transfert', { lotId: lot.id })}>Transfert / assemblage</button>
+                  <button className="btn btn-outline btn-sm" onClick={() => ouvrir('ecoulage', { lotId: lot.id })}>Écoulage</button>
                   <button className="btn btn-outline btn-sm" onClick={() => ouvrir('manipulation', { lotId: lot.id })}>Registre</button>
                   <button className="btn btn-outline btn-sm" onClick={() => ouvrir('perte', { lotId: lot.id })}>Sortie de volume</button>
                   <button className="btn btn-outline btn-sm" onClick={() => basculerPhase(lot.id)}>
